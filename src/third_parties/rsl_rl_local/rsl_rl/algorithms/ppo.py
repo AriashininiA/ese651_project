@@ -147,7 +147,35 @@ class PPO:
             _,  # rnd_state_batch - not used anymore
         ) in generator:
             # TODO ----- START -----
-            # Implement the PPO update step
+            # current policy value
+            self.actor_critic.act(observations) #build policy distrib
+            values = self.actor_critic.evaluate(critic_observations) #current critic value
+            actions_log_prob = self.actor_critic.get_actions_log_prob(sampled_actions) #log prob of old sample under current action
+            action_mean = self.actor_critic.action_mean 
+            action_std = self.actor_critic.action_std
+            entropy = self.actor_critic.entropy
+            # ppo policy lost
+            rt = torch.exp(actions_log_prob - prev_log_probs)
+            rt_clipped = torch.clamp(rt, 1.0 - self.clip_param, 1.0 + self.clip_param)
+            L = rt * advantage_estimates
+            L_clipped = rt_clipped * advantage_estimates
+            L_loss = -torch.min(L, L_clipped).mean()
+            # value loss
+            value_clipped = value_targets + (values - value_targets).clamp(-self.clip_param, self.clip_param)
+            value_losses = (values - discounted_returns).pow(2)
+            value_losses_clipped = (value_clipped - discounted_returns).pow(2)
+            value_loss = torch.max(value_losses, value_losses_clipped).mean()
+            # regularization
+            entropy_loss = entropy.mean()
+            loss = L_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_loss
+            # backprop
+            self.optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += L_loss.item()
+            mean_entropy += entropy_loss.item()
             # TODO ----- END -----
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
