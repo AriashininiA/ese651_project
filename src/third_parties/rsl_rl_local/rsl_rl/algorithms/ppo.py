@@ -154,6 +154,10 @@ class PPO:
             action_mean = self.actor_critic.action_mean 
             action_std = self.actor_critic.action_std
             entropy = self.actor_critic.entropy
+
+            if self.normalize_advantage_per_mini_batch:
+                advantage_estimates = (advantage_estimates - advantage_estimates.mean()) / (advantage_estimates.std() + 1e-8)
+
             # ppo policy lost
             rt = torch.exp(actions_log_prob - prev_log_probs)
             rt_clipped = torch.clamp(rt, 1.0 - self.clip_param, 1.0 + self.clip_param)
@@ -161,10 +165,13 @@ class PPO:
             L_clipped = rt_clipped * advantage_estimates
             L_loss = -torch.min(L, L_clipped).mean()
             # value loss
-            value_clipped = value_targets + (values - value_targets).clamp(-self.clip_param, self.clip_param)
-            value_losses = (values - discounted_returns).pow(2)
-            value_losses_clipped = (value_clipped - discounted_returns).pow(2)
-            value_loss = torch.max(value_losses, value_losses_clipped).mean()
+            if self.use_clipped_value_loss:
+                value_clipped = value_targets + (values - value_targets).clamp(-self.clip_param, self.clip_param)
+                value_losses = (values - discounted_returns).pow(2)
+                value_losses_clipped = (value_clipped - discounted_returns).pow(2)
+                value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_loss = 0.5 * (values - discounted_returns).pow(2).mean()
             # regularization
             entropy_loss = entropy.mean()
             loss = L_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_loss
