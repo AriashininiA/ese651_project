@@ -35,7 +35,7 @@ class PPO:
         schedule="fixed",
         desired_kl=0.01,
         device="cpu",
-        normalize_advantage_per_mini_batch=False,
+        normalize_advantage_per_mini_batch=True,
     ):
         self.device = device
 
@@ -124,6 +124,7 @@ class PPO:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
+        mean_kl = 0
 
         # generator for mini batches
         if self.actor_critic.is_recurrent:
@@ -154,6 +155,16 @@ class PPO:
             action_mean = self.actor_critic.action_mean 
             action_std = self.actor_critic.action_std
             entropy = self.actor_critic.entropy
+
+            with torch.inference_mode():
+                kl = torch.sum(
+                    torch.log(action_std / prev_action_stds + 1e-5) + 
+                    (torch.square(prev_action_stds) + torch.square(prev_mean_actions - action_mean)) /
+                    (2.0 * torch.square(action_std)) - 0.5,
+                    axis=-1
+                )
+
+                mean_kl += kl.mean().item()
 
             if self.normalize_advantage_per_mini_batch:
                 advantage_estimates = (advantage_estimates - advantage_estimates.mean()) / (advantage_estimates.std() + 1e-8)
@@ -189,6 +200,20 @@ class PPO:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
+        mean_kl /= num_updates
+        
+        if self.schedule == "adaptive":
+            D_target = self.desired_kl
+            
+            # TODO: Tune the coefficients
+            if mean_kl > D_target * 1.5:
+                self.learning_rate = max(1e-5, self.learning_rate * 0.5)
+            elif mean_kl < D_target / 1.5 and mean_kl > 0.0:
+                self.learning_rate = min(1e-3, self.learning_rate * 2.0)
+
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.learning_rate
+
         # Clear the storage
         self.storage.clear()
 
