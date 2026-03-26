@@ -133,19 +133,20 @@ class DefaultQuadcopterStrategy:
 
         # compute crashed environments if contact detected for 100 timesteps
         contact_forces = self.env._contact_sensor.data.net_forces_w
-        crashed = (torch.norm(contact_forces, dim=-1) > 1.0).any(dim=-1).int() # TODO: Tune the threshold
+        crashed = (torch.norm(contact_forces, dim=-1) > 1e-6).any(dim=-1).int() # TODO: Tune the threshold
         mask = (self.env.episode_length_buf > 20).int() # TODO: Tune the threshold
         self.env._crashed = self.env._crashed + (crashed * mask).int()
 
         gate_passed_signal = gate_passed.float()
 
+        # Stability
         action_l2 = torch.norm(self.env._actions, dim=1)
         # TODO ----- END -----
 
         if self.cfg.is_train:
             # TODO ----- START ----- Compute per-timestep rewards by multiplying with your reward scales (in train_race.py)
             rewards = {
-                "progress_goal": progress_vel * self.env.rew['progress_goal_reward_scale'],
+                "progress_vel": progress_vel * self.env.rew['progress_vel_reward_scale'],
                 "gate_pass": gate_passed_signal * self.env.rew['gate_pass_reward_scale'],
                 "crash": crashed.float() * self.env.rew['crash_reward_scale'],
                 "action_smoothness": action_l2 * self.env.rew['action_smoothness_reward_scale'],
@@ -200,6 +201,24 @@ class DefaultQuadcopterStrategy:
         forward_vec = torch.tensor([1.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
         gate_forward_b = quat_apply(gate_quat_b, forward_vec)
 
+        # Avoid short-sightedness
+        num_waypoints = self.env._waypoints.shape[0]
+        next_gate_idx = (current_gate_idx + 1) % num_waypoints
+        next_gate_pos_w = self.env._waypoints[next_gate_idx, :3]
+        next_gate_euler = self.env._waypoints[next_gate_idx, 3:6]
+        next_gate_quat_w = quat_from_euler_xyz(
+            next_gate_euler[:, 0],
+            next_gate_euler[:, 1],
+            next_gate_euler[:, 2]
+        )
+        next_gate_pos_b, next_gate_quat_b = subtract_frame_transforms(
+            self.env._robot.data.root_link_pos_w,
+            self.env._robot.data.root_quat_w,
+            next_gate_pos_w,
+            next_gate_quat_w
+        )
+        next_gate_forward_b = quat_apply(next_gate_quat_b, forward_vec)
+
         # Previous actions
         prev_actions = self.env._previous_actions  # Shape: (num_envs, 4)
 
@@ -217,6 +236,9 @@ class DefaultQuadcopterStrategy:
                 gate_pos_b,         # relative position to current gate in body frame (3 dims)
                 gate_quat_b,        # relative quaternion to current gate in body frame (4 dims)
                 gate_forward_b,     # forward vector of the gate in body frame (3 dims)
+                next_gate_pos_b,    # relative position to next gate in body frame (3 dims)
+                next_gate_forward_b,    # forward vector of the next gate in body frame (3 dims)
+                next_gate_quat_b,   # relative quaternion to next gate in body frame (4 dims)
                 prev_actions,       # previous actions (4 dims)
                 # drone_pos_gate_frame
             ],
