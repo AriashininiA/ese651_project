@@ -73,8 +73,8 @@ class DefaultQuadcopterStrategy:
         self.spawn_offset_y = [-0.5,  0.5]
         self.spawn_offset_z = [-0.5,  0.5]
 
-        self.spawn_yaw_noise = [-0.5, 0.5]
-        self.spawn_vel_noise = [-0.5, 0.5]
+        self.spawn_yaw_noise = [-0.2, 0.2]
+        self.spawn_vel_noise = [-0.2, 0.2]
 
     def get_rewards(self) -> torch.Tensor:
         """get_rewards() is called per timestep. This is where you define your reward structure and compute them
@@ -86,9 +86,24 @@ class DefaultQuadcopterStrategy:
         # check to change waypoint
 
         # drone coordinates in the gate's local frame
-        current_x = self.env._pose_drone_wrt_gate[:, 0]
-        current_y = self.env._pose_drone_wrt_gate[:, 1]
-        current_z = self.env._pose_drone_wrt_gate[:, 2]
+        current_gate_pos_w = self.env._waypoints[self.env._idx_wp, :3]
+        current_gate_euler = self.env._waypoints[self.env._idx_wp, 3:6]
+        current_gate_quat_w = quat_from_euler_xyz(
+            current_gate_euler[:, 0], 
+            current_gate_euler[:, 1], 
+            current_gate_euler[:, 2]
+        )
+
+        drone_pos_gate_frame, _ = subtract_frame_transforms(
+            current_gate_pos_w,
+            current_gate_quat_w,
+            self.env._robot.data.root_link_pos_w,
+            self.env._robot.data.root_quat_w
+        )
+
+        current_x = drone_pos_gate_frame[:, 0]
+        current_y = drone_pos_gate_frame[:, 1]
+        current_z = drone_pos_gate_frame[:, 2]
         
         prev_x = self.env._prev_x_drone_wrt_gate
         
@@ -134,7 +149,7 @@ class DefaultQuadcopterStrategy:
         # compute crashed environments if contact detected for 100 timesteps
         contact_forces = self.env._contact_sensor.data.net_forces_w
         crashed = (torch.norm(contact_forces, dim=-1) > 1e-6).any(dim=-1).int() # TODO: Tune the threshold
-        mask = (self.env.episode_length_buf > 20).int() # TODO: Tune the threshold
+        mask = (self.env.episode_length_buf > 50).int() # TODO: Tune the threshold
         self.env._crashed = self.env._crashed + (crashed * mask).int()
 
         gate_passed_signal = gate_passed.float()
@@ -186,6 +201,11 @@ class DefaultQuadcopterStrategy:
         drone_pose_w = self.env._robot.data.root_link_pos_w
         drone_lin_vel_b = self.env._robot.data.root_com_lin_vel_b
         drone_quat_w = self.env._robot.data.root_quat_w
+
+        gravity_w = torch.tensor([0.0, 0.0, -1.0], device=self.device).repeat(self.num_envs, 1)
+        drone_quat_inv = self.env._robot.data.root_quat_w.clone()
+        drone_quat_inv[:, 1:] = -drone_quat_inv[:, 1:]
+        projected_gravity_b = quat_apply(drone_quat_inv, gravity_w)
 
         ##### Some example observations you may want to explore using
         # Angular velocities (referred to as body rates)
@@ -242,7 +262,7 @@ class DefaultQuadcopterStrategy:
         obs = torch.cat(
             # TODO ----- START ----- List your observation tensors here to be concatenated together
             [
-                # drone_pose_w,       # position in the world frame (3 dims)
+                projected_gravity_b,    # gravity in the body frame (3 dims)
                 drone_lin_vel_b,    # velocity in the body frame (3 dims)
                 drone_ang_vel_b,    # angular velocity in the body frame (3 dims)
                 gate_pos_b,         # relative position to current gate in body frame (3 dims)
