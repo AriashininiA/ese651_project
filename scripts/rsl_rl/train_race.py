@@ -110,6 +110,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     progress_vel_reward_scale = 0.02
     gate_pass_reward_scale = 100.0
     action_smoothness_reward_scale = -0.01
+    ang_vel_penalty_reward_scale = -0.05
+    tilt_penalty_reward_scale = -0.25
     crash_reward = -0.2
     death_cost = -50.0
 
@@ -117,6 +119,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         'progress_vel_reward_scale': progress_vel_reward_scale,
         'gate_pass_reward_scale': gate_pass_reward_scale,
         'action_smoothness_reward_scale': action_smoothness_reward_scale,
+        'ang_vel_penalty_reward_scale': ang_vel_penalty_reward_scale,
+        'tilt_penalty_reward_scale': tilt_penalty_reward_scale,
         'crash_reward_scale': crash_reward,
         'death_cost': death_cost,
     }

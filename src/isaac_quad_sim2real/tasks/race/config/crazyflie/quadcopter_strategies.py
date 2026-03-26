@@ -140,7 +140,17 @@ class DefaultQuadcopterStrategy:
         gate_passed_signal = gate_passed.float()
 
         # Stability
+        ## Smoothness penalty
         action_l2 = torch.norm(self.env._actions, dim=1)
+
+        ## Angular velocity penalty
+        ang_vel_penalty = torch.norm(self.env._robot.data.root_ang_vel_b, dim=1)
+
+        ## Tilt penalty
+        local_up = torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat(self.num_envs, 1)
+        world_up = quat_apply(self.env._robot.data.root_quat_w, local_up)
+        tilt_penalty = 1.0 - world_up[:, 2]
+
         # TODO ----- END -----
 
         if self.cfg.is_train:
@@ -150,6 +160,8 @@ class DefaultQuadcopterStrategy:
                 "gate_pass": gate_passed_signal * self.env.rew['gate_pass_reward_scale'],
                 "crash": crashed.float() * self.env.rew['crash_reward_scale'],
                 "action_smoothness": action_l2 * self.env.rew['action_smoothness_reward_scale'],
+                "ang_vel_penalty": ang_vel_penalty * self.env.rew['ang_vel_penalty_reward_scale'],
+                "tilt_penalty": tilt_penalty * self.env.rew['tilt_penalty_reward_scale'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
             # reward = torch.where(self.env.reset_terminated,
