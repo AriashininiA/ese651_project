@@ -69,7 +69,7 @@ class DefaultQuadcopterStrategy:
         ### TODO: Tune these parameters
         self.gate_radius = 0.5
 
-        self.spawn_offset_x = [-1.5, -0.5] # in front of the gate
+        self.spawn_offset_x = [-1.5, -0.5] # behind the gate
         self.spawn_offset_y = [-0.5,  0.5]
         self.spawn_offset_z = [-0.5,  0.5]
 
@@ -223,15 +223,16 @@ class DefaultQuadcopterStrategy:
         )
 
         # Relative position to current gate in body frame
-        gate_pos_b, gate_quat_b = subtract_frame_transforms(
+        gate_pos_b, _ = subtract_frame_transforms(
             self.env._robot.data.root_link_pos_w,
             self.env._robot.data.root_quat_w,
             current_gate_pos_w,
             current_gate_quat_w
         )
 
-        forward_vec = torch.tensor([1.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
-        gate_forward_b = quat_apply(gate_quat_b, forward_vec)
+        local_forward = torch.tensor([-1.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
+        gate_forward_w = quat_apply(current_gate_quat_w, local_forward)
+        gate_forward_b = quat_apply(drone_quat_inv, gate_forward_w)
 
         # Avoid short-sightedness
         num_waypoints = self.env._waypoints.shape[0]
@@ -243,13 +244,15 @@ class DefaultQuadcopterStrategy:
             next_gate_euler[:, 1],
             next_gate_euler[:, 2]
         )
-        next_gate_pos_b, next_gate_quat_b = subtract_frame_transforms(
+        next_gate_pos_b, _ = subtract_frame_transforms(
             self.env._robot.data.root_link_pos_w,
             self.env._robot.data.root_quat_w,
             next_gate_pos_w,
             next_gate_quat_w
         )
-        next_gate_forward_b = quat_apply(next_gate_quat_b, forward_vec)
+
+        next_gate_forward_w = quat_apply(next_gate_quat_w, local_forward)
+        next_gate_forward_b = quat_apply(drone_quat_inv, next_gate_forward_w)
 
         # Previous actions
         prev_actions = self.env._previous_actions  # Shape: (num_envs, 4)
@@ -266,11 +269,9 @@ class DefaultQuadcopterStrategy:
                 drone_lin_vel_b,    # velocity in the body frame (3 dims)
                 drone_ang_vel_b,    # angular velocity in the body frame (3 dims)
                 gate_pos_b,         # relative position to current gate in body frame (3 dims)
-                gate_quat_b,        # relative quaternion to current gate in body frame (4 dims)
                 gate_forward_b,     # forward vector of the gate in body frame (3 dims)
                 next_gate_pos_b,    # relative position to next gate in body frame (3 dims)
                 next_gate_forward_b,    # forward vector of the next gate in body frame (3 dims)
-                next_gate_quat_b,   # relative quaternion to next gate in body frame (4 dims)
                 prev_actions,       # previous actions (4 dims)
                 # drone_pos_gate_frame
             ],
