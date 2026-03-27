@@ -120,7 +120,9 @@ class DefaultQuadcopterStrategy:
             
             # Synchronize desired_pos_w immediately
             new_target_idx = self.env._idx_wp[ids_gate_passed]
-            self.env._desired_pos_w[ids_gate_passed] = self.env._waypoints[new_target_idx, :3]
+            new_target_pos_w = self.env._waypoints[new_target_idx, :3]
+            self.env._desired_pos_w[ids_gate_passed] = new_target_pos_w
+            self.env._last_distance_to_goal[ids_gate_passed] = torch.norm(self.env._desired_pos_w[ids_gate_passed, :2] - self.env._robot.data.root_link_pos_w[ids_gate_passed, :2], dim=1)
             
             # Increment total gates passed counter
             self.env._n_gates_passed[ids_gate_passed] += 1
@@ -143,8 +145,14 @@ class DefaultQuadcopterStrategy:
         dir_to_goal = vec_to_goal / (dist_to_goal + 1e-6)
 
         progress_vel = torch.sum(drone_vel_w * dir_to_goal, dim=1)
-        # Scale progress by constant to keep magnitudes manageable
-        progress_vel = torch.clamp(progress_vel, min=-1.0, max=10.0)
+        
+        # TODO: Tune the parameters
+        progress_vel = torch.clamp(progress_vel, min=-5.0, max=15.0)
+
+        dist_to_goal = torch.norm(target_pos_w[:, :2] - drone_pos_w[:, :2], dim=1)
+        prev_dist_to_goal = self.env._last_distance_to_goal
+        progress_dist = prev_dist_to_goal - dist_to_goal
+        progress_dist = torch.clamp(progress_dist, min=-1.0, max=1.0)
 
         # compute crashed environments if contact detected for 100 timesteps
         contact_forces = self.env._contact_sensor.data.net_forces_w
@@ -172,6 +180,7 @@ class DefaultQuadcopterStrategy:
             # TODO ----- START ----- Compute per-timestep rewards by multiplying with your reward scales (in train_race.py)
             rewards = {
                 "progress_vel": progress_vel * self.env.rew['progress_vel_reward_scale'],
+                "progress_dist": progress_dist * self.env.rew['progress_dist_reward_scale'],
                 "gate_pass": gate_passed_signal * self.env.rew['gate_pass_reward_scale'],
                 "crash": crashed.float() * self.env.rew['crash_reward_scale'],
                 "action_smoothness": action_l2 * self.env.rew['action_smoothness_reward_scale'],
@@ -189,6 +198,8 @@ class DefaultQuadcopterStrategy:
         else:   # This else condition implies eval is called with play_race.py. Can be useful to debug at test-time
             reward = torch.zeros(self.num_envs, device=self.device)
             # TODO ----- END -----
+
+        self.env._last_distance_to_goal = dist_to_goal.clone()
 
         return reward
 
@@ -379,6 +390,11 @@ class DefaultQuadcopterStrategy:
         )
         default_root_state[:, 3:7] = quat
         default_root_state[:, 7:10] = torch.empty((n_reset, 3), device=self.device).uniform_(self.spawn_vel_noise[0], self.spawn_vel_noise[1])
+
+        self.env._last_distance_to_goal[env_ids] = torch.norm(
+            self.env._desired_pos_w[env_ids, :2] - self.env._robot.data.root_link_pos_w[env_ids, :2], 
+            dim=1
+        )
         # TODO ----- END -----
 
         # Handle play mode initial position
