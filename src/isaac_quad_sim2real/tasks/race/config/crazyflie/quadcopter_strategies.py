@@ -69,12 +69,17 @@ class DefaultQuadcopterStrategy:
         ### TODO: Tune these parameters
         self.gate_radius = 0.5
 
-        self.spawn_offset_x = [-1.5, -0.5] # behind the gate
-        self.spawn_offset_y = [-0.5,  0.5]
-        self.spawn_offset_z = [-0.5,  0.5]
+        self.spawn_offset_x = [-3.0, -0.5] # behind the gate
+        self.spawn_offset_y = [-1.0,  1.0]
+        self.spawn_offset_z = [-0.1,  0.1]
 
         self.spawn_yaw_noise = [-0.2, 0.2]
         self.spawn_vel_noise = [-0.2, 0.2]
+
+        # Storing last direction to goal for progress reward
+        # This prevents the velocity projection (progress_vel) from flipping to a 
+        # large negative value at the exact frame the drone crosses a gate.
+        self._last_dir_to_goal = torch.zeros((self.num_envs, 3), device=self.device)
 
     def get_rewards(self) -> torch.Tensor:
         """get_rewards() is called per timestep. This is where you define your reward structure and compute them
@@ -83,7 +88,25 @@ class DefaultQuadcopterStrategy:
         if your PPO implementation works. You should delete it or heavily modify it once you begin the racing task."""
 
         # TODO ----- START ----- Define the tensors required for your custom reward structure
-        # check to change waypoint
+        drone_pos_w = self.env._robot.data.root_link_pos_w
+        drone_vel_w = self.env._robot.data.root_com_lin_vel_w
+
+        target_pos_w = self.env._waypoints[self.env._idx_wp, :3].clone()
+        vec_to_goal = target_pos_w - drone_pos_w
+
+        dist_to_goal_3d = torch.norm(vec_to_goal, dim=1)
+
+        # By projecting current velocity onto the previous frame's target direction, 
+        # we eliminate the "reward pollution" (sudden negative dot product) that occurs 
+        # when the target waypoint switches immediately after passing a gate.
+        progress_vel = torch.sum(drone_vel_w * self._last_dir_to_goal, dim=1)
+        progress_vel = torch.clamp(progress_vel, min=-0.0, max=15.0)
+    
+        prev_dist_to_goal = self.env._last_distance_to_goal
+        progress_dist = prev_dist_to_goal - dist_to_goal_3d
+        progress_dist = torch.clamp_(progress_dist, min=-0.00, max=1.0)
+
+        self.env._last_distance_to_goal = dist_to_goal_3d.detach()
 
         # drone coordinates in the gate's local frame
         current_gate_pos_w = self.env._waypoints[self.env._idx_wp, :3]
@@ -108,10 +131,12 @@ class DefaultQuadcopterStrategy:
         prev_x = self.env._prev_x_drone_wrt_gate
         
         crossed_plane = (prev_x > 0.0) & (current_x <= 0.0)
-        
         within_bounds = (torch.abs(current_y) < self.gate_radius) & (torch.abs(current_z) < self.gate_radius)
-        
         gate_passed = crossed_plane & within_bounds
+        missed_gate = crossed_plane & (~within_bounds)
+
+        self.env._prev_x_drone_wrt_gate = current_x.clone()
+
         ids_gate_passed = torch.where(gate_passed)[0]
 
         if len(ids_gate_passed) > 0:
@@ -122,42 +147,34 @@ class DefaultQuadcopterStrategy:
             new_target_idx = self.env._idx_wp[ids_gate_passed]
             new_target_pos_w = self.env._waypoints[new_target_idx, :3]
             self.env._desired_pos_w[ids_gate_passed] = new_target_pos_w
-            self.env._last_distance_to_goal[ids_gate_passed] = torch.norm(self.env._desired_pos_w[ids_gate_passed, :2] - self.env._robot.data.root_link_pos_w[ids_gate_passed, :2], dim=1)
+            self.env._last_distance_to_goal[ids_gate_passed] = torch.norm(
+                new_target_pos_w - self.env._robot.data.root_link_pos_w[ids_gate_passed, :3],
+                dim=1
+            )
+
+            new_gate_euler = self.env._waypoints[new_target_idx, 3:6]
+            new_gate_quat_w = quat_from_euler_xyz(new_gate_euler[:, 0], new_gate_euler[:, 1], new_gate_euler[:, 2])
+            new_drone_pos_gate_frame, _ = subtract_frame_transforms(
+                new_target_pos_w, new_gate_quat_w,
+                self.env._robot.data.root_link_pos_w[ids_gate_passed],
+                self.env._robot.data.root_quat_w[ids_gate_passed]
+            )
+            self.env._prev_x_drone_wrt_gate[ids_gate_passed] = new_drone_pos_gate_frame[:, 0]
             
             # Increment total gates passed counter
             self.env._n_gates_passed[ids_gate_passed] += 1
 
-        self.env._prev_x_drone_wrt_gate = current_x.clone()
-        if len(ids_gate_passed) > 0:
-            self.env._prev_x_drone_wrt_gate[ids_gate_passed] = 1.0
-        
-        drone_pos_w = self.env._robot.data.root_link_pos_w
-        drone_vel_w = self.env._robot.data.root_com_lin_vel_w
+        final_target_pos_w = self.env._waypoints[self.env._idx_wp, :3]
+        final_vec_to_goal = final_target_pos_w - self.env._robot.data.root_link_pos_w
+        final_dist = torch.norm(final_vec_to_goal, dim=1, keepdim=True)
 
-        # calculate progress via distance to goal
-        # distance_to_goal = torch.linalg.norm(self.env._desired_pos_w - self.env._robot.data.root_link_pos_w, dim=1)
-        # distance_to_goal = torch.tanh(distance_to_goal/3.0)
-        # progress = 1 - distance_to_goal  # distance_to_goal is between 0 and 1 where 0 means the drone reached the goal
-
-        target_pos_w = self.env._waypoints[self.env._idx_wp, :3]
-        vec_to_goal = target_pos_w - drone_pos_w
-        dist_to_goal = torch.norm(vec_to_goal, dim=1, keepdim=True)
-        dir_to_goal = vec_to_goal / (dist_to_goal + 1e-6)
-
-        progress_vel = torch.sum(drone_vel_w * dir_to_goal, dim=1)
-        
-        # TODO: Tune the parameters
-        progress_vel = torch.clamp(progress_vel, min=-5.0, max=15.0)
-
-        dist_to_goal = torch.norm(target_pos_w[:, :2] - drone_pos_w[:, :2], dim=1)
-        prev_dist_to_goal = self.env._last_distance_to_goal
-        progress_dist = prev_dist_to_goal - dist_to_goal
-        progress_dist = torch.clamp(progress_dist, min=-1.0, max=1.0)
+        self._last_dir_to_goal = (final_vec_to_goal / (final_dist + 1e-6)).detach()
 
         # compute crashed environments if contact detected for 100 timesteps
         contact_forces = self.env._contact_sensor.data.net_forces_w
-        crashed = (torch.norm(contact_forces, dim=-1) > 1e-6).any(dim=-1).int() # TODO: Tune the threshold
-        mask = (self.env.episode_length_buf > 50).int() # TODO: Tune the threshold
+        is_contact = (torch.norm(contact_forces, dim=-1) > 1e-6).any(dim=-1) # TODO: Tune the threshold
+        crashed = is_contact | missed_gate
+        mask = (self.env.episode_length_buf > 100).int() # TODO: Tune the threshold
         self.env._crashed = self.env._crashed + (crashed * mask).int()
 
         gate_passed_signal = gate_passed.float()
@@ -172,7 +189,8 @@ class DefaultQuadcopterStrategy:
         ## Tilt penalty
         local_up = torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat(self.num_envs, 1)
         world_up = quat_apply(self.env._robot.data.root_quat_w, local_up)
-        tilt_penalty = 1.0 - world_up[:, 2]
+        safe_threshold = 0.5 # 60 degree
+        tilt_penalty = torch.clamp(safe_threshold - world_up[:, 2], min=0.0)
 
         # TODO ----- END -----
 
@@ -186,6 +204,7 @@ class DefaultQuadcopterStrategy:
                 "action_smoothness": action_l2 * self.env.rew['action_smoothness_reward_scale'],
                 "ang_vel_penalty": ang_vel_penalty * self.env.rew['ang_vel_penalty_reward_scale'],
                 "tilt_penalty": tilt_penalty * self.env.rew['tilt_penalty_reward_scale'],
+                "survival_bonus": torch.ones_like(progress_vel) * self.env.rew['survival_bonus'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
             # reward = torch.where(self.env.reset_terminated,
@@ -198,8 +217,6 @@ class DefaultQuadcopterStrategy:
         else:   # This else condition implies eval is called with play_race.py. Can be useful to debug at test-time
             reward = torch.zeros(self.num_envs, device=self.device)
             # TODO ----- END -----
-
-        self.env._last_distance_to_goal = dist_to_goal.clone()
 
         return reward
 
@@ -374,7 +391,7 @@ class DefaultQuadcopterStrategy:
 
         initial_x = x0_wp - x_rot
         initial_y = y0_wp - y_rot
-        initial_z = torch.clamp(z_local + z_wp, min=0.01) # make sure drone is above ground
+        initial_z = torch.clamp(z_local + z_wp, min=0.05) # make sure drone is above ground
 
         default_root_state[:, 0] = initial_x
         default_root_state[:, 1] = initial_y
@@ -391,10 +408,6 @@ class DefaultQuadcopterStrategy:
         default_root_state[:, 3:7] = quat
         default_root_state[:, 7:10] = torch.empty((n_reset, 3), device=self.device).uniform_(self.spawn_vel_noise[0], self.spawn_vel_noise[1])
 
-        self.env._last_distance_to_goal[env_ids] = torch.norm(
-            self.env._desired_pos_w[env_ids, :2] - self.env._robot.data.root_link_pos_w[env_ids, :2], 
-            dim=1
-        )
         # TODO ----- END -----
 
         # Handle play mode initial position
@@ -438,7 +451,7 @@ class DefaultQuadcopterStrategy:
         self.env._desired_pos_w[env_ids, 2] = self.env._waypoints[waypoint_indices, 2].clone()
 
         self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
-            self.env._desired_pos_w[env_ids, :2] - self.env._robot.data.root_link_pos_w[env_ids, :2], dim=1
+            self.env._desired_pos_w[env_ids, :3] - default_root_state[:, :3], dim=1
         )
         self.env._n_gates_passed[env_ids] = 0
 
@@ -452,9 +465,16 @@ class DefaultQuadcopterStrategy:
         self.env._pose_drone_wrt_gate[env_ids], _ = subtract_frame_transforms(
             self.env._waypoints[self.env._idx_wp[env_ids], :3],
             self.env._waypoints_quat[self.env._idx_wp[env_ids], :],
-            self.env._robot.data.root_link_state_w[env_ids, :3]
+            # self.env._robot.data.root_link_state_w[env_ids, :3] # TODO: is it stale?
+            default_root_state[:, :3],
+            default_root_state[:, 3:7]
         )
 
-        self.env._prev_x_drone_wrt_gate[env_ids] = 1.0
+        # self.env._prev_x_drone_wrt_gate[env_ids] = 1.0
+        self.env._prev_x_drone_wrt_gate[env_ids] = self.env._pose_drone_wrt_gate[env_ids, 0]
 
         self.env._crashed[env_ids] = 0
+
+        vec_to_initial_goal = self.env._waypoints[self.env._idx_wp[env_ids], :3] - default_root_state[:, :3]
+        dist_to_initial_goal = torch.norm(vec_to_initial_goal, dim=1, keepdim=True)
+        self._last_dir_to_goal[env_ids] = vec_to_initial_goal / (dist_to_initial_goal + 1e-6)
