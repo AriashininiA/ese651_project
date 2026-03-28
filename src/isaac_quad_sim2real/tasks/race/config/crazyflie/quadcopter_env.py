@@ -172,7 +172,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=0.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=0.0, replicate_physics=True)
     gate_model: GateModelCfg = field(default_factory=GateModelCfg)
 
     # robot
