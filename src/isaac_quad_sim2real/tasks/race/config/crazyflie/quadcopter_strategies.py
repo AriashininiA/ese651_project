@@ -77,9 +77,11 @@ class DefaultQuadcopterStrategy:
         self.spawn_vel_noise = [-0.2, 0.2]
 
         # Storing last direction to goal for progress reward
-        # This prevents the velocity projection (progress_vel) from flipping to a 
+        # This prevents the velocity projection (progress_vel) from flipping to a
         # large negative value at the exact frame the drone crosses a gate.
+        # Initialize pointing toward waypoint 0 along +X to avoid zero-vector on step 1.
         self._last_dir_to_goal = torch.zeros((self.num_envs, 3), device=self.device)
+        self._last_dir_to_goal[:, 0] = 1.0
 
     def get_rewards(self) -> torch.Tensor:
         """get_rewards() is called per timestep. This is where you define your reward structure and compute them
@@ -134,7 +136,7 @@ class DefaultQuadcopterStrategy:
         gate_passed = crossed_plane & within_bounds
         missed_gate = crossed_plane & (~within_bounds)
 
-        self.env._prev_x_drone_wrt_gate = current_x
+        self.env._prev_x_drone_wrt_gate = current_x.clone()
 
         ids_gate_passed = torch.where(gate_passed)[0]
 
@@ -171,7 +173,7 @@ class DefaultQuadcopterStrategy:
 
         # compute crashed environments if contact detected for 100 timesteps
         contact_forces = self.env._contact_sensor.data.net_forces_w
-        is_contact = (torch.norm(contact_forces, dim=-1) > 1e-6).any(dim=-1) # TODO: Tune the threshold
+        is_contact = (torch.norm(contact_forces, dim=-1) > 0.1).any(dim=-1)
         crashed = is_contact | missed_gate
         mask = (self.env.episode_length_buf > 100).int() # TODO: Tune the threshold
         self.env._crashed = self.env._crashed + (crashed * mask).int()
@@ -292,14 +294,14 @@ class DefaultQuadcopterStrategy:
         obs = torch.cat(
             # TODO ----- START ----- List your observation tensors here to be concatenated together
             [
-                projected_gravity_b,    # gravity in the body frame (3 dims)
-                drone_lin_vel_b,    # velocity in the body frame (3 dims)
-                drone_ang_vel_b,    # angular velocity in the body frame (3 dims)
-                gate_pos_b,         # relative position to current gate in body frame (3 dims)
-                gate_forward_b,     # forward vector of the gate in body frame (3 dims)
-                next_gate_pos_b,    # relative position to next gate in body frame (3 dims)
-                next_gate_forward_b,    # forward vector of the next gate in body frame (3 dims)
-                prev_actions,       # previous actions (4 dims)
+                projected_gravity_b,           # gravity in the body frame (3 dims)
+                drone_lin_vel_b,               # velocity in the body frame (3 dims)
+                drone_ang_vel_b,               # angular velocity in the body frame (3 dims)
+                gate_pos_b / 10.0,             # relative position to current gate in body frame, normalized (3 dims)
+                gate_forward_b,                # forward vector of the gate in body frame (3 dims)
+                next_gate_pos_b / 10.0,        # relative position to next gate in body frame, normalized (3 dims)
+                next_gate_forward_b,           # forward vector of the next gate in body frame (3 dims)
+                prev_actions,                  # previous actions (4 dims)
                 # drone_pos_gate_frame
             ],
             # TODO ----- END -----
