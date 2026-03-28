@@ -93,20 +93,19 @@ class DefaultQuadcopterStrategy:
 
         target_pos_w = self.env._waypoints[self.env._idx_wp, :3].clone()
         vec_to_goal = target_pos_w - drone_pos_w
-
         dist_to_goal_3d = torch.norm(vec_to_goal, dim=1)
 
         # By projecting current velocity onto the previous frame's target direction, 
         # we eliminate the "reward pollution" (sudden negative dot product) that occurs 
         # when the target waypoint switches immediately after passing a gate.
         progress_vel = torch.sum(drone_vel_w * self._last_dir_to_goal, dim=1)
-        progress_vel = torch.clamp(progress_vel, min=-0.0, max=15.0)
+        progress_vel = torch.clamp(progress_vel, min=-3.0, max=15.0)
     
-        prev_dist_to_goal = self.env._last_distance_to_goal
+        prev_dist_to_goal = self.env._last_distance_to_goal.clone()
         progress_dist = prev_dist_to_goal - dist_to_goal_3d
-        progress_dist = torch.clamp_(progress_dist, min=-0.00, max=1.0)
+        progress_dist = torch.clamp_(progress_dist, min=-1.0, max=1.0)
 
-        self.env._last_distance_to_goal = dist_to_goal_3d.detach()
+        self.env._last_distance_to_goal[:] = dist_to_goal_3d.detach()
 
         # drone coordinates in the gate's local frame
         current_gate_pos_w = self.env._waypoints[self.env._idx_wp, :3]
@@ -135,7 +134,7 @@ class DefaultQuadcopterStrategy:
         gate_passed = crossed_plane & within_bounds
         missed_gate = crossed_plane & (~within_bounds)
 
-        self.env._prev_x_drone_wrt_gate = current_x.clone()
+        self.env._prev_x_drone_wrt_gate = current_x
 
         ids_gate_passed = torch.where(gate_passed)[0]
 
@@ -168,7 +167,7 @@ class DefaultQuadcopterStrategy:
         final_vec_to_goal = final_target_pos_w - self.env._robot.data.root_link_pos_w
         final_dist = torch.norm(final_vec_to_goal, dim=1, keepdim=True)
 
-        self._last_dir_to_goal = (final_vec_to_goal / (final_dist + 1e-6)).detach()
+        self._last_dir_to_goal[:] = (final_vec_to_goal / (final_dist + 1e-6)).detach()
 
         # compute crashed environments if contact detected for 100 timesteps
         contact_forces = self.env._contact_sensor.data.net_forces_w
@@ -207,9 +206,9 @@ class DefaultQuadcopterStrategy:
                 "survival_bonus": torch.ones_like(progress_vel) * self.env.rew['survival_bonus'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-            # reward = torch.where(self.env.reset_terminated,
-            #                     torch.ones_like(reward) * self.env.rew['death_cost'], reward)
-            reward += self.env.reset_terminated.float() * self.env.rew['death_cost']
+            reward = torch.where(self.env.reset_terminated,
+                                torch.ones_like(reward) * self.env.rew['death_cost'], reward)
+            # reward += self.env.reset_terminated.float() * self.env.rew['death_cost']
 
             # Logging
             for key, value in rewards.items():
