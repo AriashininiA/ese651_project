@@ -109,13 +109,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reward scales
     progress_vel_reward_scale = 0.2
     progress_dist_reward_scale = 1.0
-    gate_pass_reward_scale = 100.0
+    gate_pass_reward_scale = 20.0
     action_smoothness_reward_scale = -0.01
     ang_vel_penalty_reward_scale = -0.01
     tilt_penalty_reward_scale = -0.1
     crash_reward = -0.2
     survival_bonus = 0.1
-    death_cost = -50.0
+    death_cost = -10.0
 
     rewards = {
         'progress_vel_reward_scale': progress_vel_reward_scale,

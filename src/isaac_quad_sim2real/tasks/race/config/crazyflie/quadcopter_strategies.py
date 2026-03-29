@@ -134,7 +134,7 @@ class DefaultQuadcopterStrategy:
 
         prev_dist_to_goal = self.env._last_distance_to_goal.clone()
         progress_dist = prev_dist_to_goal - dist_to_goal_3d
-        progress_dist = torch.clamp_(progress_dist, min=-1.0, max=1.0)
+        progress_dist = torch.clamp_(progress_dist, min=-0.2, max=1.0)
 
         self.env._last_distance_to_goal[:] = dist_to_goal_3d.detach()
 
