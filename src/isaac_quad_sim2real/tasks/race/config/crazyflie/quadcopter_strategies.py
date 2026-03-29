@@ -104,7 +104,7 @@ class DefaultQuadcopterStrategy:
         # we eliminate the "reward pollution" (sudden negative dot product) that occurs 
         # when the target waypoint switches immediately after passing a gate.
         progress_vel = torch.sum(drone_vel_w * self._last_dir_to_goal, dim=1)
-        progress_vel = torch.clamp(progress_vel, min=-3.0, max=15.0)
+        progress_vel = torch.clamp(progress_vel, min=0.0, max=15.0)
 
         # ===== DEBUG =====
         self._debug_step += 1
@@ -204,14 +204,21 @@ class DefaultQuadcopterStrategy:
         contact_forces = self.env._contact_sensor.data.net_forces_w
         is_contact = (torch.norm(contact_forces, dim=-1) > 0.1).any(dim=-1)
         crashed = is_contact | missed_gate
-        mask = (self.env.episode_length_buf > 100).int() # TODO: Tune the threshold
-        self.env._crashed = self.env._crashed + (crashed * mask).int()
+
+        # missed gate = immediate termination (no grace period)
+        self.env._crashed = torch.where(missed_gate,
+                                        torch.full_like(self.env._crashed, 101),
+                                        self.env._crashed)
+
+        # physical contact accumulates toward termination (grace period of 100 steps)
+        mask = (self.env.episode_length_buf > 100).int()
+        self.env._crashed = self.env._crashed + (is_contact * mask).int()
 
         gate_passed_signal = gate_passed.float()
 
         # Stability
-        ## Smoothness penalty
-        action_l2 = torch.norm(self.env._actions, dim=1)
+        ## Smoothness penalty (penalize action changes, not magnitude)
+        action_l2 = torch.norm(self.env._actions - self.env._previous_actions, dim=1)
 
         ## Angular velocity penalty
         ang_vel_penalty = torch.norm(self.env._robot.data.root_ang_vel_b, dim=1)
@@ -237,9 +244,7 @@ class DefaultQuadcopterStrategy:
                 "survival_bonus": torch.ones_like(progress_vel) * self.env.rew['survival_bonus'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-            reward = torch.where(self.env.reset_terminated,
-                                torch.ones_like(reward) * self.env.rew['death_cost'], reward)
-            # reward += self.env.reset_terminated.float() * self.env.rew['death_cost']
+            reward += self.env.reset_terminated.float() * self.env.rew['death_cost']
 
             # Logging
             for key, value in rewards.items():
