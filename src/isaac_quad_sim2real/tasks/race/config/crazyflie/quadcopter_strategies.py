@@ -205,14 +205,9 @@ class DefaultQuadcopterStrategy:
         is_contact = (torch.norm(contact_forces, dim=-1) > 0.1).any(dim=-1)
         crashed = is_contact | missed_gate
 
-        # missed gate = immediate termination (no grace period)
-        self.env._crashed = torch.where(missed_gate,
-                                        torch.full_like(self.env._crashed, 101),
-                                        self.env._crashed)
-
-        # physical contact accumulates toward termination (grace period of 100 steps)
+        # both contact and missed gate accumulate toward termination (grace period of 100 steps)
         mask = (self.env.episode_length_buf > 100).int()
-        self.env._crashed = self.env._crashed + (is_contact * mask).int()
+        self.env._crashed = self.env._crashed + (crashed * mask).int()
 
         gate_passed_signal = gate_passed.float()
 
