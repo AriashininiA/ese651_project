@@ -83,6 +83,9 @@ class DefaultQuadcopterStrategy:
         self._last_dir_to_goal = torch.zeros((self.num_envs, 3), device=self.device)
         self._last_dir_to_goal[:, 0] = 1.0
 
+        # DEBUG counter
+        self._debug_step = 0
+
     def get_rewards(self) -> torch.Tensor:
         """get_rewards() is called per timestep. This is where you define your reward structure and compute them
         according to the reward scales you tune in train_race.py. The following is an example reward structure that
@@ -102,7 +105,33 @@ class DefaultQuadcopterStrategy:
         # when the target waypoint switches immediately after passing a gate.
         progress_vel = torch.sum(drone_vel_w * self._last_dir_to_goal, dim=1)
         progress_vel = torch.clamp(progress_vel, min=-3.0, max=15.0)
-    
+
+        # ===== DEBUG =====
+        self._debug_step += 1
+        if self._debug_step % 2000 == 1:  # print every 2000 steps
+            vel_mag = torch.norm(drone_vel_w, dim=1)
+            episode_steps = self.env.episode_length_buf
+
+            # stats across all envs
+            print(f"\n[DEBUG step={self._debug_step}]")
+            print(f"  progress_vel     : mean={progress_vel.mean():.3f}  std={progress_vel.std():.3f}  min={progress_vel.min():.3f}  max={progress_vel.max():.3f}")
+            print(f"  drone speed (m/s): mean={vel_mag.mean():.3f}  max={vel_mag.max():.3f}")
+            print(f"  _last_dir_to_goal: mean={self._last_dir_to_goal.mean(0).cpu().numpy().round(3)}")
+            print(f"  episode_length   : mean={episode_steps.float().mean():.1f}  max={episode_steps.max()}")
+
+            # stats only for envs at episode start (step 1 = first step after reset)
+            start_mask = (episode_steps == 1)
+            if start_mask.any():
+                print(f"  [at episode start, n={start_mask.sum()}]")
+                print(f"    progress_vel : mean={progress_vel[start_mask].mean():.3f}")
+                print(f"    drone_vel_w  : mean={drone_vel_w[start_mask].mean(0).cpu().numpy().round(3)}")
+                print(f"    dir_to_goal  : mean={self._last_dir_to_goal[start_mask].mean(0).cpu().numpy().round(3)}")
+
+            # fraction of envs with negative progress_vel
+            neg_frac = (progress_vel < 0).float().mean()
+            print(f"  fraction with negative progress_vel: {neg_frac:.2%}")
+        # ===== END DEBUG =====
+
         prev_dist_to_goal = self.env._last_distance_to_goal.clone()
         progress_dist = prev_dist_to_goal - dist_to_goal_3d
         progress_dist = torch.clamp_(progress_dist, min=-1.0, max=1.0)
