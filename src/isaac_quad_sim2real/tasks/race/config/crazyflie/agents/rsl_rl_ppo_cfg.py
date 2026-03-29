@@ -29,7 +29,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.1,
         entropy_coef=0.0,
         num_learning_epochs=5,
-        num_mini_batches=4,
+        num_mini_batches=8,
         learning_rate=5.0e-4,
         schedule="adaptive",
         gamma=0.99,
