@@ -404,9 +404,8 @@ class DefaultQuadcopterStrategy:
         # This example code initializes the drone 2m behind the first gate. You should delete it or heavily
         # modify it once you begin the racing task.
 
-        # start from the zeroth waypoint (beginning of the race)
-        num_waypoints = self.env._waypoints.shape[0]
-        waypoint_indices = torch.randint(0, num_waypoints, (n_reset,), device=self.device, dtype=self.env._idx_wp.dtype)
+        # always spawn behind gate 0 for consistent curriculum learning
+        waypoint_indices = torch.zeros(n_reset, device=self.device, dtype=self.env._idx_wp.dtype)
 
         # get starting poses behind waypoints
         x0_wp = self.env._waypoints[waypoint_indices][:, 0]
