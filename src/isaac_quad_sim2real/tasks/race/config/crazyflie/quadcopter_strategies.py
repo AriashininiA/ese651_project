@@ -91,18 +91,11 @@ class DefaultQuadcopterStrategy:
 
         # TODO ----- START ----- Define the tensors required for your custom reward structure
         drone_pos_w = self.env._robot.data.root_link_pos_w
-        drone_vel_w = self.env._robot.data.root_com_lin_vel_w
 
         target_pos_w = self.env._waypoints[self.env._idx_wp, :3].clone()
         vec_to_goal = target_pos_w - drone_pos_w
         dist_to_goal_3d = torch.norm(vec_to_goal, dim=1)
 
-        # By projecting current velocity onto the previous frame's target direction, 
-        # we eliminate the "reward pollution" (sudden negative dot product) that occurs 
-        # when the target waypoint switches immediately after passing a gate.
-        progress_vel = torch.sum(drone_vel_w * self._last_dir_to_goal, dim=1)
-        progress_vel = torch.clamp(progress_vel, min=-3.0, max=15.0)
-    
         prev_dist_to_goal = self.env._last_distance_to_goal.clone()
         progress_dist = prev_dist_to_goal - dist_to_goal_3d
         progress_dist = torch.clamp_(progress_dist, min=-1.0, max=1.0)
@@ -175,8 +168,9 @@ class DefaultQuadcopterStrategy:
         contact_forces = self.env._contact_sensor.data.net_forces_w
         is_contact = (torch.norm(contact_forces, dim=-1) > 0.1).any(dim=-1)
         crashed = is_contact | missed_gate
-        mask = (self.env.episode_length_buf > 100).int() # TODO: Tune the threshold
-        self.env._crashed = self.env._crashed + (crashed * mask).int()
+        self.env._crashed = torch.where(crashed & (self.env.episode_length_buf > 100),
+                                         torch.full_like(self.env._crashed, 101),
+                                         self.env._crashed)
 
         gate_passed_signal = gate_passed.float()
 
@@ -193,19 +187,22 @@ class DefaultQuadcopterStrategy:
         safe_threshold = 0.5 # 60 degree
         tilt_penalty = torch.clamp(safe_threshold - world_up[:, 2], min=0.0)
 
+        ## Action delta smoothness penalty
+        action_delta = torch.norm(self.env._actions - self.env._previous_actions, dim=1)
+
         # TODO ----- END -----
 
         if self.cfg.is_train:
             # TODO ----- START ----- Compute per-timestep rewards by multiplying with your reward scales (in train_race.py)
             rewards = {
-                "progress_vel": progress_vel * self.env.rew['progress_vel_reward_scale'],
                 "progress_dist": progress_dist * self.env.rew['progress_dist_reward_scale'],
                 "gate_pass": gate_passed_signal * self.env.rew['gate_pass_reward_scale'],
                 "crash": crashed.float() * self.env.rew['crash_reward_scale'],
                 "action_smoothness": action_l2 * self.env.rew['action_smoothness_reward_scale'],
+                "action_delta": action_delta * self.env.rew['action_delta_reward_scale'],
                 "ang_vel_penalty": ang_vel_penalty * self.env.rew['ang_vel_penalty_reward_scale'],
                 "tilt_penalty": tilt_penalty * self.env.rew['tilt_penalty_reward_scale'],
-                "survival_bonus": torch.ones_like(progress_vel) * self.env.rew['survival_bonus'],
+                "survival_bonus": torch.ones(self.num_envs, device=self.device) * self.env.rew['survival_bonus'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
             reward = torch.where(self.env.reset_terminated,
