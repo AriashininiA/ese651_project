@@ -460,18 +460,18 @@ class DefaultQuadcopterStrategy:
             # point drone towards the zeroth gate
             yaw0 = torch.atan2(y0_wp - y0, x0_wp - x0)
 
-            default_root_state = self.env._robot.data.default_root_state[0].unsqueeze(0)
-            default_root_state[:, 0] = x0
-            default_root_state[:, 1] = y0
+            default_root_state = self.env._robot.data.default_root_state[env_ids].clone()
+            default_root_state[:, 0] = x0.expand(len(env_ids))
+            default_root_state[:, 1] = y0.expand(len(env_ids))
             default_root_state[:, 2] = z0
 
             quat = quat_from_euler_xyz(
-                torch.zeros(1, device=self.device),
-                torch.zeros(1, device=self.device),
-                yaw0
+                torch.zeros(len(env_ids), device=self.device),
+                torch.zeros(len(env_ids), device=self.device),
+                yaw0.expand(len(env_ids))
             )
             default_root_state[:, 3:7] = quat
-            waypoint_indices = self.env._initial_wp
+            waypoint_indices = self.env._initial_wp.expand(len(env_ids))
 
         # Set waypoint indices and desired positions
         self.env._idx_wp[env_ids] = waypoint_indices
