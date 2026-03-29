@@ -471,7 +471,7 @@ class DefaultQuadcopterStrategy:
                 yaw0.expand(len(env_ids))
             )
             default_root_state[:, 3:7] = quat
-            waypoint_indices = self.env._initial_wp.expand(len(env_ids))
+            waypoint_indices = torch.full((len(env_ids),), self.env._initial_wp, device=self.device, dtype=self.env._idx_wp.dtype)
 
         # Set waypoint indices and desired positions
         self.env._idx_wp[env_ids] = waypoint_indices
