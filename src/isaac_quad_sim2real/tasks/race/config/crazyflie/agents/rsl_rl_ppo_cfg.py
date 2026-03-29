@@ -26,7 +26,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
-        clip_param=0.2,
+        clip_param=0.1,
         entropy_coef=0.0,
         num_learning_epochs=5,
         num_mini_batches=4,
@@ -36,5 +36,4 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=0.5,
-        clip_param=0.1,
     )
