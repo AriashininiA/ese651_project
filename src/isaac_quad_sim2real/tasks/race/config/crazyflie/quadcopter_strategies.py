@@ -87,25 +87,33 @@ class DefaultQuadcopterStrategy:
         causes the drone to hover near the zeroth gate. It will not produce a racing policy, but simply serves as proof
         if your PPO implementation works. You should delete it or heavily modify it once you begin the racing task."""
 
-        # TODO ----- START ----- Define the tensors required for your custom reward structure
+        # =========================================================
+        # =================== Velocity Progress ===================
+        # =========================================================
         drone_pos_w = self.env._robot.data.root_link_pos_w
         drone_vel_w = self.env._robot.data.root_com_lin_vel_w
-
-        target_pos_w = self.env._waypoints[self.env._idx_wp, :3].clone()
-        vec_to_goal = target_pos_w - drone_pos_w
-        dist_to_goal_3d = torch.norm(vec_to_goal, dim=1)
 
         # By projecting current velocity onto the previous frame's target direction, 
         # we eliminate the "reward pollution" (sudden negative dot product) that occurs 
         # when the target waypoint switches immediately after passing a gate.
         progress_vel = torch.sum(drone_vel_w * self._last_dir_to_goal, dim=1)
-        progress_vel = torch.clamp(progress_vel, min=-3.0, max=15.0)
-    
-        prev_dist_to_goal = self.env._last_distance_to_goal.clone()
-        progress_dist = prev_dist_to_goal - dist_to_goal_3d
-        progress_dist = torch.clamp_(progress_dist, min=-1.0, max=1.0)
+        progress_vel = torch.clamp(progress_vel, min=0.0, max=10.0)
 
-        self.env._last_distance_to_goal[:] = dist_to_goal_3d.detach()
+        # =========================================================
+        # =================== Distance Progress ===================
+        # =========================================================
+        target_pos_w = self.env._waypoints[self.env._idx_wp, :3].clone()
+        vec_to_goal_2d = target_pos_w[:, :2] - drone_pos_w[:, :2]
+        dist_to_goal_2d = torch.norm(vec_to_goal_2d, dim=1)
+
+        prev_dist_to_goal = self.env._last_distance_to_goal.clone()
+        dist_clamped = torch.clamp(dist_to_goal_2d, min=0.1)
+        prev_dist_clamped = torch.clamp(prev_dist_to_goal, min=0.1)
+        # progess_dist_linear = prev_dist_to_goal - dist_to_goal_2d
+        progress_dist_potential = 1./dist_clamped - 1./prev_dist_clamped
+        progress_dist = torch.clamp(progress_dist_potential, min=-0.0, max=1.0)
+
+        self.env._last_distance_to_goal[:] = dist_to_goal_2d.detach()
 
         # drone coordinates in the gate's local frame
         current_gate_pos_w = self.env._waypoints[self.env._idx_wp, :3]
@@ -134,7 +142,7 @@ class DefaultQuadcopterStrategy:
         gate_passed = crossed_plane & within_bounds
         missed_gate = crossed_plane & (~within_bounds)
 
-        self.env._prev_x_drone_wrt_gate = current_x
+        self.env._prev_x_drone_wrt_gate[:] = current_x
 
         ids_gate_passed = torch.where(gate_passed)[0]
 
@@ -147,7 +155,7 @@ class DefaultQuadcopterStrategy:
             new_target_pos_w = self.env._waypoints[new_target_idx, :3]
             self.env._desired_pos_w[ids_gate_passed] = new_target_pos_w
             self.env._last_distance_to_goal[ids_gate_passed] = torch.norm(
-                new_target_pos_w - self.env._robot.data.root_link_pos_w[ids_gate_passed, :3],
+                new_target_pos_w[:, :2] - self.env._robot.data.root_link_pos_w[ids_gate_passed, :2],
                 dim=1
             )
 
@@ -191,6 +199,15 @@ class DefaultQuadcopterStrategy:
         safe_threshold = 0.5 # 60 degree
         tilt_penalty = torch.clamp(safe_threshold - world_up[:, 2], min=0.0)
 
+        # Height Penalty
+        gate_z = self.env._waypoints[self.env._idx_wp, 2]
+        height_diff = torch.abs(self.env._robot.data.root_link_pos_w[:, 2] - gate_z)
+        height_penalty = torch.clamp(height_diff - 0.5, min=0.0)
+
+        # Survival Bonus
+        height_ok = (height_diff < 0.5).float()
+        survival_bonus = height_ok
+        
         # TODO ----- END -----
 
         if self.cfg.is_train:
@@ -203,7 +220,8 @@ class DefaultQuadcopterStrategy:
                 "action_smoothness": action_l2 * self.env.rew['action_smoothness_reward_scale'],
                 "ang_vel_penalty": ang_vel_penalty * self.env.rew['ang_vel_penalty_reward_scale'],
                 "tilt_penalty": tilt_penalty * self.env.rew['tilt_penalty_reward_scale'],
-                "survival_bonus": torch.ones_like(progress_vel) * self.env.rew['survival_bonus'],
+                "height_penalty": height_penalty * self.env.rew['height_penalty_reward_scale'],
+                "survival_bonus": survival_bonus * self.env.rew['survival_bonus'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
             reward = torch.where(self.env.reset_terminated,
@@ -216,6 +234,18 @@ class DefaultQuadcopterStrategy:
         else:   # This else condition implies eval is called with play_race.py. Can be useful to debug at test-time
             reward = torch.zeros(self.num_envs, device=self.device)
             # TODO ----- END -----
+
+        if self.env.common_step_counter % 1000 == 0:
+            print("=== DEBUG REWARDS ===")
+            print("progress_vel  mean/std:", progress_vel.mean().item(), progress_vel.std().item())
+            print("progress_dist mean/std:", progress_dist.mean().item(), progress_dist.std().item())
+            print("dist_to_goal  mean/std:", dist_to_goal_2d.mean().item(), dist_to_goal_2d.std().item())
+            print("tilt raw      mean/std:", tilt_penalty.mean().item(), tilt_penalty.std().item())
+            print("ang_vel raw   mean/std:", ang_vel_penalty.mean().item(), ang_vel_penalty.std().item())
+            print("height_penalty mean/std:", height_penalty.mean().item(), height_penalty.std().item())
+            print("drone z mean:", self.env._robot.data.root_link_pos_w[:, 2].mean().item())
+            print("gate z mean:", gate_z.mean().item())
+            print("=====================")
 
         return reward
 
@@ -305,6 +335,19 @@ class DefaultQuadcopterStrategy:
             # TODO ----- END -----
             dim=-1,
         )
+
+        if self.env.common_step_counter % 1000 == 0:
+            print("=== DEBUG OBS BREAKDOWN ===")
+            print("projected_gravity_b  mean/std:", projected_gravity_b.mean(dim=0).cpu(), projected_gravity_b.std(dim=0).cpu())
+            print("drone_lin_vel_b      mean/std:", drone_lin_vel_b.mean(dim=0).cpu(), drone_lin_vel_b.std(dim=0).cpu())
+            print("drone_ang_vel_b      mean/std:", drone_ang_vel_b.mean(dim=0).cpu(), drone_ang_vel_b.std(dim=0).cpu())
+            print("gate_pos_b           mean/std:", gate_pos_b.mean(dim=0).cpu(), gate_pos_b.std(dim=0).cpu())
+            print("gate_forward_b       mean/std:", gate_forward_b.mean(dim=0).cpu(), gate_forward_b.std(dim=0).cpu())
+            print("next_gate_pos_b      mean/std:", next_gate_pos_b.mean(dim=0).cpu(), next_gate_pos_b.std(dim=0).cpu())
+            print("next_gate_forward_b  mean/std:", next_gate_forward_b.mean(dim=0).cpu(), next_gate_forward_b.std(dim=0).cpu())
+            print("prev_actions         mean/std:", prev_actions.mean(dim=0).cpu(), prev_actions.std(dim=0).cpu())
+            print("===========================")
+
         observations = {"policy": obs}
 
         return observations
@@ -450,7 +493,7 @@ class DefaultQuadcopterStrategy:
         self.env._desired_pos_w[env_ids, 2] = self.env._waypoints[waypoint_indices, 2].clone()
 
         self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
-            self.env._desired_pos_w[env_ids, :3] - default_root_state[:, :3], dim=1
+            self.env._desired_pos_w[env_ids, :2] - default_root_state[:, :2], dim=1
         )
         self.env._n_gates_passed[env_ids] = 0
 
