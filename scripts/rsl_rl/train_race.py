@@ -121,7 +121,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     progress_reward_scale = 4.0
     center_reward_scale = 1.0
     upright_reward_scale = 0.10
-    crash_reward_scale = -2.5
+    crash_reward_scale = -3.0
     time_penalty_reward_scale = -0.02
     death_cost = -10.0
 
