@@ -11,7 +11,7 @@ import torch
 import numpy as np
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
-from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, euler_xyz_from_quat, wrap_to_pi, matrix_from_quat
+from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, euler_xyz_from_quat, wrap_to_pi, matrix_from_quat, quat_apply
 
 if TYPE_CHECKING:
     from .quadcopter_env import QuadcopterEnv
@@ -89,16 +89,27 @@ class DefaultQuadcopterStrategy:
 
         # Current drone position in world frame
         drone_pos_w = self.env._robot.data.root_link_pos_w
+        drone_vel_w = self.env._robot.data.root_com_lin_vel_w
 
         # =========================================================
         # 2) Dense progress reward toward current desired gate
         #    Use reduction in distance since last step
         # =========================================================
+        vec_to_goal_w = self.env._desired_pos_w - drone_pos_w
         distance_to_goal = torch.linalg.norm(self.env._desired_pos_w - drone_pos_w, dim=1)
-        progress = self.env._last_distance_to_goal - distance_to_goal
+        linear_progress_dist = (self.env._last_distance_to_goal - distance_to_goal) * 0.1
+
+        dist_clamped = torch.clamp(distance_to_goal, min=0.1)
+        prev_dist_clamped = torch.clamp(self.env._last_distance_to_goal, min=0.1)
+        potential_progress_dist = 1./dist_clamped - 1./prev_dist_clamped
 
         # clamp progress so one weird physics step doesn't dominate learning
-        progress = torch.clamp(progress, min=-1.0, max=1.0)
+        progress_dist = linear_progress_dist + potential_progress_dist
+        progress_dist = torch.clamp(progress_dist, min=-1.0, max=1.0)
+
+        dir_to_goal_w = vec_to_goal_w / (distance_to_goal.unsqueeze(1) + 1e-6)
+        progress_vel = torch.sum(drone_vel_w * dir_to_goal_w, dim=1)
+        progress_vel = torch.clamp(progress_vel, min=-2.0, max=8.0)
 
         # =========================================================
         # 3) Gate traversal detection
@@ -174,16 +185,24 @@ class DefaultQuadcopterStrategy:
         self.env._prev_x_drone_wrt_gate = x_gate.clone()
 
         # =========================================================
-        # 10) Final scaled reward
+        # 10) Action Smoothness
+        # ========================================================= 
+        action_diff = self.env._actions - self.env._previous_actions
+        action_smoothness = torch.norm(action_diff, dim=1)
+
+        # =========================================================
+        # 11) Final scaled reward
         # =========================================================
         if self.cfg.is_train:
             rewards = {
                 "gate_pass": gate_pass_reward * self.env.rew["gate_pass_reward_scale"],
-                "progress": progress * self.env.rew["progress_reward_scale"],
+                "progress_dist": progress_dist * self.env.rew["progress_dist_reward_scale"],
+                "progress_vel": progress_vel * self.env.rew["progress_vel_reward_scale"],
                 "center": center_reward * self.env.rew["center_reward_scale"],
                 "upright": upright_reward * self.env.rew["upright_reward_scale"],
                 "crash": crash * self.env.rew["crash_reward_scale"],
                 "time_penalty": time_penalty * self.env.rew["time_penalty_reward_scale"],
+                "action_smoothness": action_smoothness * self.env.rew["action_smoothness_reward_scale"],
             }
 
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -226,7 +245,7 @@ class DefaultQuadcopterStrategy:
         drone_ang_vel_b = self.env._robot.data.root_ang_vel_b                # (N, 3)
 
         # =========================================================
-        # 2) Current gate information
+        # 2.1) Current gate information
         # =========================================================
         current_gate_idx = self.env._idx_wp
         current_gate_pos_w = self.env._waypoints[current_gate_idx, :3]       # (N, 3)
@@ -240,6 +259,33 @@ class DefaultQuadcopterStrategy:
             drone_quat_w,
             current_gate_pos_w,
         )                                                                    # (N, 3)
+
+        current_gate_euler = self.env._waypoints[current_gate_idx, 3:6]
+        current_gate_quat_w = quat_from_euler_xyz(current_gate_euler[:, 0], current_gate_euler[:, 1], current_gate_euler[:, 2])
+        drone_quat_inv = drone_quat_w.clone()
+        drone_quat_inv[:, 1:] = -drone_quat_inv[:, 1:]
+
+        local_forward = torch.tensor([-1.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
+        gate_forward_w = quat_apply(current_gate_quat_w, local_forward)
+        gate_forward_b = quat_apply(drone_quat_inv, gate_forward_w)          # (N, 3)
+
+        # =========================================================
+        # 2.2) Next gate information
+        # =========================================================
+        next_gate_idx = (self.env._idx_wp + 1) % self.env._waypoints.shape[0]
+        next_gate_pos_w = self.env._waypoints[next_gate_idx, :3]             # (N, 3)
+
+        # Relative position to next gate in body frame
+        next_gate_pos_b, _ = subtract_frame_transforms(
+            drone_pos_w,
+            drone_quat_w,
+            next_gate_pos_w,
+        )                                                                    # (N, 3)
+
+        next_gate_euler = self.env._waypoints[next_gate_idx, 3:6]
+        next_gate_quat_w = quat_from_euler_xyz(next_gate_euler[:, 0], next_gate_euler[:, 1], next_gate_euler[:, 2])
+        next_gate_forward_w = quat_apply(next_gate_quat_w, local_forward)
+        next_gate_forward_b = quat_apply(drone_quat_inv, next_gate_forward_w)  # (N, 3)
 
         # =========================================================
         # 3) Attitude cue: gravity in body frame
@@ -264,6 +310,9 @@ class DefaultQuadcopterStrategy:
                 gravity_b,               # 3
                 gate_pos_gate_frame,     # 3
                 gate_pos_b,              # 3
+                gate_forward_b,          # 3
+                next_gate_pos_b,         # 3
+                next_gate_forward_b,     # 3
                 prev_actions,            # 4
             ],
             dim=-1,
