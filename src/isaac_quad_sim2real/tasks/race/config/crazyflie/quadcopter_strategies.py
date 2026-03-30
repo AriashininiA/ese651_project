@@ -95,21 +95,33 @@ class DefaultQuadcopterStrategy:
         # 2) Dense progress reward toward current desired gate
         #    Use reduction in distance since last step
         # =========================================================
-        vec_to_goal_w = self.env._desired_pos_w - drone_pos_w
-        distance_to_goal = torch.linalg.norm(self.env._desired_pos_w - drone_pos_w, dim=1)
-        linear_progress_dist = (self.env._last_distance_to_goal - distance_to_goal) * 0.1
 
-        dist_clamped = torch.clamp(distance_to_goal, min=0.1)
+        # Progress in distance
+        vec_to_goal_w = self.env._desired_pos_w - drone_pos_w
+        distance_to_goal_3d = torch.linalg.norm(vec_to_goal_w, dim=1)
+        distance_to_goal_2d = torch.linalg.norm(vec_to_goal_w[:, :2], dim=1)
+        linear_progress_dist = (self.env._last_distance_to_goal - distance_to_goal_2d) * 0.1
+
+        dist_clamped = torch.clamp(distance_to_goal_2d, min=0.1)
         prev_dist_clamped = torch.clamp(self.env._last_distance_to_goal, min=0.1)
         potential_progress_dist = 1./dist_clamped - 1./prev_dist_clamped
 
-        # clamp progress so one weird physics step doesn't dominate learning
         progress_dist = linear_progress_dist + potential_progress_dist
         progress_dist = torch.clamp(progress_dist, min=-1.0, max=1.0)
 
-        dir_to_goal_w = vec_to_goal_w / (distance_to_goal.unsqueeze(1) + 1e-6)
+        # Progress in velocity
+        dir_to_goal_w = vec_to_goal_w / (distance_to_goal_3d.unsqueeze(1) + 1e-6)
         progress_vel = torch.sum(drone_vel_w * dir_to_goal_w, dim=1)
         progress_vel = torch.clamp(progress_vel, min=-2.0, max=8.0)
+
+        # Alignment with gate normal (TODO: Do we need this?)
+        current_gate_euler = self.env._waypoints[self.env._idx_wp, 3:6]
+        current_gate_quat_w = quat_from_euler_xyz(current_gate_euler[:, 0], current_gate_euler[:, 1], current_gate_euler[:, 2])
+        local_forward = torch.tensor([-1.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
+        gate_forward_w = quat_apply(current_gate_quat_w, local_forward)
+        vel_along_gate_normal = torch.sum(drone_vel_w * gate_forward_w, dim=1)
+        near_gate_mask = (distance_to_goal_2d < 1.0).float()
+        vel_along_gate_normal = torch.clamp(vel_along_gate_normal, min=-2.0, max=4.0) * near_gate_mask
 
         # =========================================================
         # 3) Gate traversal detection
@@ -122,6 +134,14 @@ class DefaultQuadcopterStrategy:
         crossed_plane = (prev_x_gate > 0.0) & (x_gate <= 0.0)
         gate_passed = crossed_plane & inside_gate
         ids_gate_passed = torch.where(gate_passed)[0]
+
+        reverse_cross_plane = (prev_x_gate < 0.0) & (x_gate >= 0.0)
+        reverse_cross_gate = reverse_cross_plane & inside_gate
+        reverse_gate_cross_penalty = reverse_cross_gate.float()
+
+        # Continuous penalty for approaching the gate from the wrong side
+        on_wrong_side = (x_gate <= 0.0) & (~gate_passed) & (inside_gate)
+        wrong_side_penalty = on_wrong_side.float() * torch.exp(-0.5 * distance_to_goal_2d)
 
         # =========================================================
         # 4) Gate pass bonus and bookkeeping
@@ -178,7 +198,7 @@ class DefaultQuadcopterStrategy:
         # 9) Update state for next step
         # =========================================================
         # Recompute distance-to-goal after possible gate index update
-        new_distance_to_goal = torch.linalg.norm(self.env._desired_pos_w - drone_pos_w, dim=1)
+        new_distance_to_goal = torch.linalg.norm((self.env._desired_pos_w - drone_pos_w)[:, :2], dim=1)
         self.env._last_distance_to_goal = new_distance_to_goal
 
         # store current gate-frame x for next-step crossing detection
@@ -196,8 +216,11 @@ class DefaultQuadcopterStrategy:
         if self.cfg.is_train:
             rewards = {
                 "gate_pass": gate_pass_reward * self.env.rew["gate_pass_reward_scale"],
+                "reverse_gate_cross_penalty": reverse_gate_cross_penalty * self.env.rew["reverse_gate_cross_penalty_reward_scale"],
+                "wrong_side_penalty": wrong_side_penalty * self.env.rew["wrong_side_penalty_reward_scale"],
                 "progress_dist": progress_dist * self.env.rew["progress_dist_reward_scale"],
                 "progress_vel": progress_vel * self.env.rew["progress_vel_reward_scale"],
+                "vel_along_gate_normal": vel_along_gate_normal * self.env.rew["vel_along_gate_normal_reward_scale"],
                 "center": center_reward * self.env.rew["center_reward_scale"],
                 "upright": upright_reward * self.env.rew["upright_reward_scale"],
                 "crash": crash * self.env.rew["crash_reward_scale"],
@@ -512,5 +535,5 @@ class DefaultQuadcopterStrategy:
         # initialize gate-crossing memory and last distance
         self.env._prev_x_drone_wrt_gate[env_ids] = self.env._pose_drone_wrt_gate[env_ids, 0].clone()
         self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
-            self.env._desired_pos_w[env_ids] - self.env._robot.data.root_link_pos_w[env_ids], dim=1
+            (self.env._desired_pos_w[env_ids] - self.env._robot.data.root_link_pos_w[env_ids])[:, :2], dim=1
         )
