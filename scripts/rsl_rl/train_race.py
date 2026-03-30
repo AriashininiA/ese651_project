@@ -117,10 +117,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     #     'death_cost': death_cost,
     # }
         # reward scales
-    gate_pass_reward_scale = 8.0
-    progress_reward_scale = 2.0
+    gate_pass_reward_scale = 12.0
+    progress_reward_scale = 3.0
     center_reward_scale = 0.8
-    upright_reward_scale = 0.3
+    upright_reward_scale = 0.15
     crash_reward_scale = -2.0
     time_penalty_reward_scale = -0.02
     death_cost = -10.0
