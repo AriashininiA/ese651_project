@@ -145,22 +145,54 @@ def main():
     if hasattr(obs, "get"):  # Check if it's a TensorDict
         obs = obs["policy"]  # Extract the policy observation
     timestep = 0
+
+    num_gates_per_lap = env.unwrapped._waypoints.shape[0]
+    total_gates_needed = num_gates_per_lap * 3
+    dt = env.unwrapped.step_dt
+
+    lap_times = []
+    last_lap_step = 0
+    last_gates_passed = 0
+
+    print(f"[INFO] Gates per lap: {num_gates_per_lap}")
+    print(f"[INFO] Waiting for 3 laps...")
+
     # simulate environment
     while simulation_app.is_running():
-        # run everything in inference mode
         with torch.inference_mode():
-            # agent stepping
             actions = policy(obs)
-            # env stepping
             obs, rewards, dones, infos = env.step(actions)
-            # Extract tensor from TensorDict for policy
-            if hasattr(obs, "get"):  # Check if it's a TensorDict
-                obs = obs["policy"]  # Extract the policy observation
-        if args_cli.video:
-            timestep += 1
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
+            if hasattr(obs, "get"):
+                obs = obs["policy"]
+        
+        timestep += 1
+        
+        # check gate progress (use env index 0)
+        gates_passed = env.unwrapped._n_gates_passed[0].item()
+        
+        if gates_passed > last_gates_passed:
+            print(f"  Gate {gates_passed} passed at step {timestep} ({timestep * dt:.2f}s)")
+            last_gates_passed = gates_passed
+        
+        # check lap completion
+        current_lap = gates_passed // num_gates_per_lap
+        if current_lap > len(lap_times):
+            lap_step = timestep - last_lap_step
+            lap_time = lap_step * dt
+            lap_times.append(lap_time)
+            last_lap_step = timestep
+            print(f"  === Lap {len(lap_times)} complete: {lap_time:.2f}s ({lap_step} steps) ===")
+        
+        if len(lap_times) >= 3:
+            print(f"\n{'='*50}")
+            for i, t in enumerate(lap_times):
+                print(f"  Lap {i+1}: {t:.2f}s")
+            print(f"  Total: {sum(lap_times):.2f}s")
+            print(f"{'='*50}")
+            break
+        
+        if args_cli.video and timestep >= args_cli.video_length:
+            break
 
     # close the simulator
     env.close()
