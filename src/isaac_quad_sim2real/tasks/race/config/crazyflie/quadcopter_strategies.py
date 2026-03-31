@@ -42,29 +42,32 @@ class DefaultQuadcopterStrategy:
                 for key in keys
             }
 
-        # Initialize fixed parameters once (no domain randomization)
-        # These parameters remain constant throughout the simulation
-        # Aerodynamic drag coefficients
-        self.env._K_aero[:, :2] = self.env._k_aero_xy_value
-        self.env._K_aero[:, 2] = self.env._k_aero_z_value
+        # Domain randomization ranges
+        self._twr_min = self.cfg.thrust_to_weight * 0.95
+        self._twr_max = self.cfg.thrust_to_weight * 1.05
 
-        # PID controller gains for angular rate control
-        # Roll and pitch use the same gains
-        self.env._kp_omega[:, :2] = self.env._kp_omega_rp_value
-        self.env._ki_omega[:, :2] = self.env._ki_omega_rp_value
-        self.env._kd_omega[:, :2] = self.env._kd_omega_rp_value
+        self._k_aero_xy_min = self.cfg.k_aero_xy * 0.5
+        self._k_aero_xy_max = self.cfg.k_aero_xy * 2.0
+        self._k_aero_z_min = self.cfg.k_aero_z * 0.5
+        self._k_aero_z_max = self.cfg.k_aero_z * 2.0
 
-        # Yaw has different gains
-        self.env._kp_omega[:, 2] = self.env._kp_omega_y_value
-        self.env._ki_omega[:, 2] = self.env._ki_omega_y_value
-        self.env._kd_omega[:, 2] = self.env._kd_omega_y_value
+        self._kp_omega_rp_min = self.cfg.kp_omega_rp * 0.85
+        self._kp_omega_rp_max = self.cfg.kp_omega_rp * 1.15
+        self._ki_omega_rp_min = self.cfg.ki_omega_rp * 0.85
+        self._ki_omega_rp_max = self.cfg.ki_omega_rp * 1.15
+        self._kd_omega_rp_min = self.cfg.kd_omega_rp * 0.7
+        self._kd_omega_rp_max = self.cfg.kd_omega_rp * 1.3
 
-        # Motor time constants (same for all 4 motors)
-        self.env._tau_m[:] = self.env._tau_m_value
+        self._kp_omega_y_min = self.cfg.kp_omega_y * 0.85
+        self._kp_omega_y_max = self.cfg.kp_omega_y * 1.15
+        self._ki_omega_y_min = self.cfg.ki_omega_y * 0.85
+        self._ki_omega_y_max = self.cfg.ki_omega_y * 1.15
+        self._kd_omega_y_min = self.cfg.kd_omega_y * 0.7
+        self._kd_omega_y_max = self.cfg.kd_omega_y * 1.3
 
-        # Thrust to weight ratio
-        self.env._thrust_to_weight[:] = self.env._twr_value
-    
+        # Set initial parameters for all envs
+        self._randomize_params(torch.arange(self.num_envs, device=self.device))
+
     def get_rewards(self) -> torch.Tensor:
         """Reward function for racing through gates with correct traversal direction.
         This includes:
@@ -368,9 +371,14 @@ class DefaultQuadcopterStrategy:
             self.env.extras["log"].update(extras)
 
         # =========================================================
-        # 2) Base robot reset
+        # 2.1) Base robot reset
         # =========================================================
         self.env._robot.reset(env_ids)
+
+        # =========================================================
+        # 2.2) Domain Randomization
+        # =========================================================
+        self._randomize_params(env_ids)
 
         # =========================================================
         # 3) Initialize model paths if needed
@@ -537,3 +545,39 @@ class DefaultQuadcopterStrategy:
         self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
             (self.env._desired_pos_w[env_ids] - self.env._robot.data.root_link_pos_w[env_ids])[:, :2], dim=1
         )
+
+    def _randomize_params(self, env_ids: torch.Tensor):
+        n = len(env_ids)
+
+        self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(
+            self._twr_min, self._twr_max
+        )
+
+        self.env._K_aero[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
+            self._k_aero_xy_min, self._k_aero_xy_max
+        ).expand(-1, 2)
+        self.env._K_aero[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
+            self._k_aero_z_min, self._k_aero_z_max
+        )
+
+        self.env._kp_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
+            self._kp_omega_rp_min, self._kp_omega_rp_max
+        ).expand(-1, 2)
+        self.env._ki_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
+            self._ki_omega_rp_min, self._ki_omega_rp_max
+        ).expand(-1, 2)
+        self.env._kd_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
+            self._kd_omega_rp_min, self._kd_omega_rp_max
+        ).expand(-1, 2)
+
+        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
+            self._kp_omega_y_min, self._kp_omega_y_max
+        )
+        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
+            self._ki_omega_y_min, self._ki_omega_y_max
+        )
+        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
+            self._kd_omega_y_min, self._kd_omega_y_max
+        )
+
+        self.env._tau_m[env_ids] = self.env._tau_m_value
