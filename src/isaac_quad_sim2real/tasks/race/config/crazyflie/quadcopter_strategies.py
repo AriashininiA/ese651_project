@@ -42,6 +42,8 @@ class DefaultQuadcopterStrategy:
                 for key in keys
             }
 
+        self.randomize = True
+
         # Domain randomization ranges
         self._twr_min = self.cfg.thrust_to_weight * 0.95
         self._twr_max = self.cfg.thrust_to_weight * 1.05
@@ -103,11 +105,11 @@ class DefaultQuadcopterStrategy:
         vec_to_goal_w = self.env._desired_pos_w - drone_pos_w
         distance_to_goal_3d = torch.linalg.norm(vec_to_goal_w, dim=1)
         distance_to_goal_2d = torch.linalg.norm(vec_to_goal_w[:, :2], dim=1)
-        linear_progress_dist = (self.env._last_distance_to_goal - distance_to_goal_2d) * 0.1
+        linear_progress_dist = (self.env._last_distance_to_goal - distance_to_goal_3d) * 0.1
 
-        dist_clamped = torch.clamp(distance_to_goal_2d, min=0.1)
+        dist_clamped = torch.clamp(distance_to_goal_3d, min=0.1)
         prev_dist_clamped = torch.clamp(self.env._last_distance_to_goal, min=0.1)
-        potential_progress_dist = 1./dist_clamped - 1./prev_dist_clamped
+        potential_progress_dist = (1./dist_clamped - 1./prev_dist_clamped) * 0.9
 
         progress_dist = linear_progress_dist + potential_progress_dist
         progress_dist = torch.clamp(progress_dist, min=-1.0, max=1.0)
@@ -201,7 +203,7 @@ class DefaultQuadcopterStrategy:
         # 9) Update state for next step
         # =========================================================
         # Recompute distance-to-goal after possible gate index update
-        new_distance_to_goal = torch.linalg.norm((self.env._desired_pos_w - drone_pos_w)[:, :2], dim=1)
+        new_distance_to_goal = torch.linalg.norm((self.env._desired_pos_w - drone_pos_w), dim=1)
         self.env._last_distance_to_goal = new_distance_to_goal
 
         # store current gate-frame x for next-step crossing detection
@@ -543,41 +545,54 @@ class DefaultQuadcopterStrategy:
         # initialize gate-crossing memory and last distance
         self.env._prev_x_drone_wrt_gate[env_ids] = self.env._pose_drone_wrt_gate[env_ids, 0].clone()
         self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
-            (self.env._desired_pos_w[env_ids] - self.env._robot.data.root_link_pos_w[env_ids])[:, :2], dim=1
+            (self.env._desired_pos_w[env_ids] - self.env._robot.data.root_link_pos_w[env_ids]), dim=1
         )
 
     def _randomize_params(self, env_ids: torch.Tensor):
         n = len(env_ids)
 
-        self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(
-            self._twr_min, self._twr_max
-        )
+        if self.randomize:
+            self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(
+                self._twr_min, self._twr_max
+            )
 
-        self.env._K_aero[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
-            self._k_aero_xy_min, self._k_aero_xy_max
-        ).expand(-1, 2)
-        self.env._K_aero[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
-            self._k_aero_z_min, self._k_aero_z_max
-        )
+            self.env._K_aero[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
+                self._k_aero_xy_min, self._k_aero_xy_max
+            ).expand(-1, 2)
+            self.env._K_aero[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
+                self._k_aero_z_min, self._k_aero_z_max
+            )
 
-        self.env._kp_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
-            self._kp_omega_rp_min, self._kp_omega_rp_max
-        ).expand(-1, 2)
-        self.env._ki_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
-            self._ki_omega_rp_min, self._ki_omega_rp_max
-        ).expand(-1, 2)
-        self.env._kd_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
-            self._kd_omega_rp_min, self._kd_omega_rp_max
-        ).expand(-1, 2)
+            self.env._kp_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
+                self._kp_omega_rp_min, self._kp_omega_rp_max
+            ).expand(-1, 2)
+            self.env._ki_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
+                self._ki_omega_rp_min, self._ki_omega_rp_max
+            ).expand(-1, 2)
+            self.env._kd_omega[env_ids, :2] = torch.empty(n, 1, device=self.device).uniform_(
+                self._kd_omega_rp_min, self._kd_omega_rp_max
+            ).expand(-1, 2)
 
-        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
-            self._kp_omega_y_min, self._kp_omega_y_max
-        )
-        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
-            self._ki_omega_y_min, self._ki_omega_y_max
-        )
-        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
-            self._kd_omega_y_min, self._kd_omega_y_max
-        )
+            self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
+                self._kp_omega_y_min, self._kp_omega_y_max
+            )
+            self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
+                self._ki_omega_y_min, self._ki_omega_y_max
+            )
+            self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(
+                self._kd_omega_y_min, self._kd_omega_y_max
+            )
 
-        self.env._tau_m[env_ids] = self.env._tau_m_value
+            self.env._tau_m[env_ids] = self.env._tau_m_value
+
+        else:
+            self.env._thrust_to_weight[env_ids] = self.env._twr_value
+            self.env._K_aero[env_ids, :2] = self.env._k_aero_xy_value
+            self.env._K_aero[env_ids, 2] = self.env._k_aero_z_value
+            self.env._kp_omega[env_ids, :2] = self.env._kp_omega_rp_value
+            self.env._ki_omega[env_ids, :2] = self.env._ki_omega_rp_value
+            self.env._kd_omega[env_ids, :2] = self.env._kd_omega_rp_value
+            self.env._kp_omega[env_ids, 2] = self.env._kp_omega_y_value
+            self.env._ki_omega[env_ids, 2] = self.env._ki_omega_y_value
+            self.env._kd_omega[env_ids, 2] = self.env._kd_omega_y_value
+            self.env._tau_m[env_ids] = self.env._tau_m_value
