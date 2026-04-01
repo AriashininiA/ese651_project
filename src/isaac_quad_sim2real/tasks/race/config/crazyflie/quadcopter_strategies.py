@@ -101,8 +101,14 @@ class DefaultQuadcopterStrategy:
         #    Use reduction in distance since last step
         # =========================================================
 
+        # Dynamic goal for Gate 3 (Encourage Power Loop)
+        dynamic_goal_w = self.env._desired_pos_w.clone()
+        is_targeting_gate_3 = (self.env._idx_wp == 3).float().unsqueeze(1)
+        powerloop_ghost_offset = 1.5
+        dynamic_goal_w[:, 2] += powerloop_ghost_offset * is_targeting_gate_3[:, 0]
+
         # Progress in distance
-        vec_to_goal_w = self.env._desired_pos_w - drone_pos_w
+        vec_to_goal_w = dynamic_goal_w - drone_pos_w
         distance_to_goal_3d = torch.linalg.norm(vec_to_goal_w, dim=1)
         distance_to_goal_2d = torch.linalg.norm(vec_to_goal_w[:, :2], dim=1)
         linear_progress_dist = (self.env._last_distance_to_goal - distance_to_goal_3d) * 0.1
@@ -180,6 +186,10 @@ class DefaultQuadcopterStrategy:
         body_z_in_world = rot_mats[:, :, 2]                             # drone body z-axis expressed in world
         upright_reward = torch.clamp(body_z_in_world[:, 2], min=0.0, max=1.0)
 
+        not_powerloop_mask = (self.env._idx_wp != 3).float()
+        upright_reward = upright_reward * not_powerloop_mask
+        
+
         # =========================================================
         # 7) Crash detection using contact forces
         #    Keep the professor's "persistent contact" style accumulation
@@ -203,7 +213,11 @@ class DefaultQuadcopterStrategy:
         # 9) Update state for next step
         # =========================================================
         # Recompute distance-to-goal after possible gate index update
-        new_distance_to_goal = torch.linalg.norm((self.env._desired_pos_w - drone_pos_w), dim=1)
+        new_dynamic_goal_w = self.env._desired_pos_w.clone()
+        new_is_targeting_gate_3 = (self.env._idx_wp == 3).float().unsqueeze(1)
+        new_dynamic_goal_w[:, 2] += powerloop_ghost_offset * new_is_targeting_gate_3[:, 0]
+
+        new_distance_to_goal = torch.linalg.norm((new_dynamic_goal_w - drone_pos_w), dim=1)
         self.env._last_distance_to_goal = new_distance_to_goal
 
         # store current gate-frame x for next-step crossing detection

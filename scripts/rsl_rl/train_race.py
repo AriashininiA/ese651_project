@@ -121,7 +121,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "gate_pass_reward_scale": 25.0,
         "reverse_gate_cross_penalty_reward_scale": -30.0,
         "wrong_side_penalty_reward_scale": -2.0,
-        "progress_dist_reward_scale": 6.0,
+        "progress_dist_reward_scale": 3.0,
         "progress_vel_reward_scale": 0.1,
         "vel_along_gate_normal_reward_scale": 0.05,
         "center_reward_scale": 0.2,
