@@ -104,8 +104,10 @@ class DefaultQuadcopterStrategy:
         # Dynamic goal for Gate 3 (Encourage Power Loop)
         dynamic_goal_w = self.env._desired_pos_w.clone()
         is_targeting_gate_3 = (self.env._idx_wp == 3).float().unsqueeze(1)
-        powerloop_ghost_offset = 1.5
-        dynamic_goal_w[:, 2] += powerloop_ghost_offset * is_targeting_gate_3[:, 0]
+        powerloop_ghost_vertical_offset = 1.5
+        powerloop_ghost_horizontal_offset = 0.5
+        dynamic_goal_w[:, 2] += powerloop_ghost_vertical_offset * is_targeting_gate_3[:, 0]
+        dynamic_goal_w[:, 1] += powerloop_ghost_horizontal_offset * is_targeting_gate_3[:, 0]
 
         # Progress in distance
         vec_to_goal_w = dynamic_goal_w - drone_pos_w
@@ -134,6 +136,9 @@ class DefaultQuadcopterStrategy:
         near_gate_mask = (distance_to_goal_2d < 1.0).float()
         vel_along_gate_normal = torch.clamp(vel_along_gate_normal, min=-2.0, max=4.0) * near_gate_mask
 
+        speed = torch.linalg.norm(drone_vel_w, dim=1)
+        speed_reward = torch.clamp(speed / 8.0, min=0.0, max=1.0)
+
         # =========================================================
         # 3) Gate traversal detection
         #    Correct pass = cross gate plane from +x to -x in gate frame
@@ -159,6 +164,7 @@ class DefaultQuadcopterStrategy:
         # =========================================================
         gate_pass_reward = gate_passed.float()
 
+        alignment_reward = torch.zeros(self.num_envs, device=self.device)
         if len(ids_gate_passed) > 0:
             self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % self.env._waypoints.shape[0]
             self.env._n_gates_passed[ids_gate_passed] += 1
@@ -167,12 +173,32 @@ class DefaultQuadcopterStrategy:
             self.env._desired_pos_w[ids_gate_passed, :2] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :2]
             self.env._desired_pos_w[ids_gate_passed, 2] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], 2]
 
+            # Alignment to next gate
+            idx_next = self.env._idx_wp[ids_gate_passed]
+            pos_next = self.env._waypoints[idx_next, :3].clone()
+
+            is_next_gate_3 = (idx_next == 3).float().unsqueeze(1)
+            pos_next[:, 1] += powerloop_ghost_horizontal_offset * is_next_gate_3[:, 0]
+            pos_next[:, 2] += powerloop_ghost_vertical_offset * is_next_gate_3[:, 0]
+            
+            dir_to_next = pos_next - drone_pos_w[ids_gate_passed]
+            dir_to_next = dir_to_next / (torch.linalg.norm(dir_to_next, dim=1, keepdim=True) + 1e-6)
+            
+            vel_dir = drone_vel_w[ids_gate_passed]
+            vel_dir = vel_dir / (torch.linalg.norm(vel_dir, dim=1, keepdim=True) + 1e-6)
+            
+            subset_alignment = torch.sum(vel_dir * dir_to_next, dim=1)
+            subset_alignment = torch.clamp(subset_alignment, min=0.0, max=1.0)
+            alignment_reward[ids_gate_passed] = subset_alignment * 8.0
+
         # =========================================================
         # 5) Centering reward near gate opening
         #    Encourages passing through the middle instead of clipping edges
         # =========================================================
         radial_offset = torch.sqrt(y_gate**2 + z_gate**2)
-        center_reward = torch.exp(-4.0 * radial_offset**2)
+        # center_reward = torch.exp(-1.0 * radial_offset**2)
+        tolerance = 0.75 * gate_half_size
+        center_reward = torch.clamp(1.0 - torch.relu(radial_offset - tolerance) / (gate_half_size - tolerance + 1e-6), min=0.0, max=1.0)
 
         # optionally emphasize it when approaching the gate plane
         near_gate_plane = torch.abs(x_gate) < 1.5
@@ -184,11 +210,16 @@ class DefaultQuadcopterStrategy:
         # =========================================================
         rot_mats = matrix_from_quat(self.env._robot.data.root_quat_w)   # (N, 3, 3)
         body_z_in_world = rot_mats[:, :, 2]                             # drone body z-axis expressed in world
-        upright_reward = torch.clamp(body_z_in_world[:, 2], min=0.0, max=1.0)
+        upright_reward = torch.clamp((body_z_in_world[:, 2] - 0.5) * 2, min=0.0, max=1.0)
 
         not_powerloop_mask = (self.env._idx_wp != 3).float()
         upright_reward = upright_reward * not_powerloop_mask
-        
+
+        # Encourage aggressive maneuvers (e.g. Powerloop) at gate 3
+        is_targeting_gate_3_flat = (self.env._idx_wp == 3).float()
+        upside_down_factor = 0.5 * (1.0 - body_z_in_world[:, 2])
+        high_enough = (drone_pos_w[:, 2] > 1.0).float()
+        inversion_bonus = upside_down_factor * is_targeting_gate_3_flat * high_enough
 
         # =========================================================
         # 7) Crash detection using contact forces
@@ -215,7 +246,8 @@ class DefaultQuadcopterStrategy:
         # Recompute distance-to-goal after possible gate index update
         new_dynamic_goal_w = self.env._desired_pos_w.clone()
         new_is_targeting_gate_3 = (self.env._idx_wp == 3).float().unsqueeze(1)
-        new_dynamic_goal_w[:, 2] += powerloop_ghost_offset * new_is_targeting_gate_3[:, 0]
+        new_dynamic_goal_w[:, 2] += powerloop_ghost_vertical_offset * new_is_targeting_gate_3[:, 0]
+        new_dynamic_goal_w[:, 1] += powerloop_ghost_horizontal_offset * new_is_targeting_gate_3[:, 0]
 
         new_distance_to_goal = torch.linalg.norm((new_dynamic_goal_w - drone_pos_w), dim=1)
         self.env._last_distance_to_goal = new_distance_to_goal
@@ -239,9 +271,12 @@ class DefaultQuadcopterStrategy:
                 "wrong_side_penalty": wrong_side_penalty * self.env.rew["wrong_side_penalty_reward_scale"],
                 "progress_dist": progress_dist * self.env.rew["progress_dist_reward_scale"],
                 "progress_vel": progress_vel * self.env.rew["progress_vel_reward_scale"],
+                "speed": speed_reward * self.env.rew["speed_reward_scale"],
                 "vel_along_gate_normal": vel_along_gate_normal * self.env.rew["vel_along_gate_normal_reward_scale"],
+                "exit_alignment": alignment_reward * self.env.rew["exit_alignment_reward_scale"],
                 "center": center_reward * self.env.rew["center_reward_scale"],
                 "upright": upright_reward * self.env.rew["upright_reward_scale"],
+                "inversion_bonus": inversion_bonus * self.env.rew["inversion_bonus_reward_scale"],
                 "crash": crash * self.env.rew["crash_reward_scale"],
                 "time_penalty": time_penalty * self.env.rew["time_penalty_reward_scale"],
                 "action_smoothness": action_smoothness * self.env.rew["action_smoothness_reward_scale"],
