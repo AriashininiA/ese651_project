@@ -110,31 +110,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # progress_goal_reward_scale = 50.0
     # crash_reward = -1.0
     # death_cost = -10.0
-
-    # rewards = {
-    #     'progress_goal_reward_scale': progress_goal_reward_scale,
-    #     'crash_reward_scale': crash_reward,
-    #     'death_cost': death_cost,
-    # }
-        # reward scales
     rewards = {
-        "gate_pass_reward_scale": 25.0,
-        "reverse_gate_cross_penalty_reward_scale": -30.0,
-        "wrong_side_penalty_reward_scale": -2.0,
-        "progress_dist_reward_scale": 3.0,
-        "progress_vel_reward_scale": 0.25,
-        "speed_reward_scale": 0.2,
-        "vel_along_gate_normal_reward_scale": 0.1,
-        "lookahead_alignment_reward_scale": 0.35,
-        "lookahead_progress_reward_scale": 0.2,
-        "exit_alignment_reward_scale": 0.25,
-        "center_reward_scale": 0.03,
-        "upright_reward_scale": 0.05,
-        "inversion_bonus_reward_scale": 0.5,
-        "crash_reward_scale": -2.0,
-        "time_penalty_reward_scale": -0.12,
-        "action_smoothness_reward_scale": -0.002,
-        "death_cost": -6.0,
+    "gate_pass_reward_scale": 25.0,
+    "reverse_gate_cross_penalty_reward_scale": -30.0,
+    "wrong_side_penalty_reward_scale": -2.0,
+    "progress_dist_reward_scale": 2.0,
+    "progress_vel_reward_scale": 0.35,
+    "speed_reward_scale": 0.3,
+    "vel_along_gate_normal_reward_scale": 0.15,
+    "lookahead_alignment_reward_scale": 0.8,
+    "lookahead_progress_reward_scale": 0.5,
+    "exit_alignment_reward_scale": 0.5,
+    "center_reward_scale": 0.01,
+    "upright_reward_scale": 0.03,
+    "inversion_bonus_reward_scale": 0.5,
+    "crash_reward_scale": -2.5,
+    "time_penalty_reward_scale": -0.15,
+    "action_smoothness_reward_scale": -0.002,
+    "death_cost": -8.0,
     }
     # TODO ----- END -----
 
