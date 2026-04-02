@@ -124,8 +124,6 @@ class DefaultQuadcopterStrategy:
 
         # Progress in velocity
         dir_to_goal_w = vec_to_goal_w / (distance_to_goal_3d.unsqueeze(1) + 1e-6)
-        progress_vel = torch.sum(drone_vel_w * dir_to_goal_w, dim=1)
-        progress_vel = torch.clamp(progress_vel, min=-2.0, max=8.0)
 
         # Alignment with gate normal (TODO: Do we need this?)
         current_gate_euler = self.env._waypoints[self.env._idx_wp, 3:6]
@@ -140,6 +138,7 @@ class DefaultQuadcopterStrategy:
         speed_reward = torch.clamp(speed / 8.0, min=0.0, max=1.0)
 
         radial_offset = torch.sqrt(y_gate**2 + z_gate**2)
+        gate_half_size = float(self.env._gate_model_cfg_data.gate_side) / 2.0
 
         # Preview the following gate while the drone is still near the current one.
         # This encourages carrying speed through the exit instead of re-aiming afterward.
@@ -154,8 +153,18 @@ class DefaultQuadcopterStrategy:
         dir_to_next_goal_w = vec_to_next_goal_w / (distance_to_next_goal.unsqueeze(1) + 1e-6)
         vel_dir_all = drone_vel_w / (speed.unsqueeze(1) + 1e-6)
 
-        lookahead_window = torch.clamp(1.0 - torch.abs(x_gate) / 2.0, min=0.0, max=1.0)
-        center_window = torch.clamp(1.0 - radial_offset / (0.90 * float(self.env._gate_model_cfg_data.gate_side) / 2.0 + 1e-6), min=0.0, max=1.0)
+        near_gate_progress = torch.clamp(1.0 - torch.abs(x_gate) / 3.0, min=0.0, max=1.0)
+        centered_progress = torch.clamp(1.0 - radial_offset / (1.10 * gate_half_size + 1e-6), min=0.0, max=1.0)
+        blend = (near_gate_progress * centered_progress).unsqueeze(1)
+
+        blended_dir_w = (1.0 - blend) * dir_to_goal_w + blend * dir_to_next_goal_w
+        blended_dir_w = blended_dir_w / (torch.linalg.norm(blended_dir_w, dim=1, keepdim=True) + 1e-6)
+
+        progress_vel = torch.sum(drone_vel_w * blended_dir_w, dim=1)
+        progress_vel = torch.clamp(progress_vel, min=-2.0, max=8.0)
+
+        lookahead_window = torch.clamp(1.0 - torch.abs(x_gate) / 4.0, min=0.0, max=1.0)
+        center_window = torch.clamp(1.0 - radial_offset / (1.10 * gate_half_size + 1e-6), min=0.0, max=1.0)
         lookahead_mask = lookahead_window * center_window
 
         lookahead_alignment = torch.sum(vel_dir_all * dir_to_next_goal_w, dim=1)
@@ -170,7 +179,6 @@ class DefaultQuadcopterStrategy:
         #    Correct pass = cross gate plane from +x to -x in gate frame
         #    AND be within the gate opening
         # =========================================================
-        gate_half_size = float(self.env._gate_model_cfg_data.gate_side) / 2.0
         inside_gate = (torch.abs(y_gate) < 0.90 * gate_half_size) & (torch.abs(z_gate) < 0.90 * gate_half_size)
 
         crossed_plane = (prev_x_gate > 0.0) & (x_gate <= 0.0)
