@@ -139,6 +139,32 @@ class DefaultQuadcopterStrategy:
         speed = torch.linalg.norm(drone_vel_w, dim=1)
         speed_reward = torch.clamp(speed / 8.0, min=0.0, max=1.0)
 
+        radial_offset = torch.sqrt(y_gate**2 + z_gate**2)
+
+        # Preview the following gate while the drone is still near the current one.
+        # This encourages carrying speed through the exit instead of re-aiming afterward.
+        next_gate_idx_full = (self.env._idx_wp + 1) % self.env._waypoints.shape[0]
+        next_goal_w = self.env._waypoints[next_gate_idx_full, :3].clone()
+        is_next_gate_3_full = (next_gate_idx_full == 3).float().unsqueeze(1)
+        next_goal_w[:, 1] += powerloop_ghost_horizontal_offset * is_next_gate_3_full[:, 0]
+        next_goal_w[:, 2] += powerloop_ghost_vertical_offset * is_next_gate_3_full[:, 0]
+
+        vec_to_next_goal_w = next_goal_w - drone_pos_w
+        distance_to_next_goal = torch.linalg.norm(vec_to_next_goal_w, dim=1)
+        dir_to_next_goal_w = vec_to_next_goal_w / (distance_to_next_goal.unsqueeze(1) + 1e-6)
+        vel_dir_all = drone_vel_w / (speed.unsqueeze(1) + 1e-6)
+
+        lookahead_window = torch.clamp(1.0 - torch.abs(x_gate) / 2.0, min=0.0, max=1.0)
+        center_window = torch.clamp(1.0 - radial_offset / (0.90 * float(self.env._gate_model_cfg_data.gate_side) / 2.0 + 1e-6), min=0.0, max=1.0)
+        lookahead_mask = lookahead_window * center_window
+
+        lookahead_alignment = torch.sum(vel_dir_all * dir_to_next_goal_w, dim=1)
+        lookahead_alignment = torch.clamp(lookahead_alignment, min=0.0, max=1.0) * lookahead_mask
+
+        lookahead_progress = torch.sum(drone_vel_w * dir_to_next_goal_w, dim=1)
+        lookahead_progress = torch.clamp(lookahead_progress, min=0.0, max=8.0) / 8.0
+        lookahead_progress = lookahead_progress * lookahead_mask
+
         # =========================================================
         # 3) Gate traversal detection
         #    Correct pass = cross gate plane from +x to -x in gate frame
@@ -195,7 +221,6 @@ class DefaultQuadcopterStrategy:
         # 5) Centering reward near gate opening
         #    Encourages passing through the middle instead of clipping edges
         # =========================================================
-        radial_offset = torch.sqrt(y_gate**2 + z_gate**2)
         # center_reward = torch.exp(-1.0 * radial_offset**2)
         tolerance = 0.75 * gate_half_size
         center_reward = torch.clamp(1.0 - torch.relu(radial_offset - tolerance) / (gate_half_size - tolerance + 1e-6), min=0.0, max=1.0)
@@ -273,6 +298,8 @@ class DefaultQuadcopterStrategy:
                 "progress_vel": progress_vel * self.env.rew["progress_vel_reward_scale"],
                 "speed": speed_reward * self.env.rew["speed_reward_scale"],
                 "vel_along_gate_normal": vel_along_gate_normal * self.env.rew["vel_along_gate_normal_reward_scale"],
+                "lookahead_alignment": lookahead_alignment * self.env.rew["lookahead_alignment_reward_scale"],
+                "lookahead_progress": lookahead_progress * self.env.rew["lookahead_progress_reward_scale"],
                 "exit_alignment": alignment_reward * self.env.rew["exit_alignment_reward_scale"],
                 "center": center_reward * self.env.rew["center_reward_scale"],
                 "upright": upright_reward * self.env.rew["upright_reward_scale"],
