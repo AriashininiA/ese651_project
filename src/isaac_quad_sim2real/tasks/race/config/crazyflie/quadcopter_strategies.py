@@ -160,7 +160,8 @@ class DefaultQuadcopterStrategy:
         blended_dir_w = (1.0 - blend) * dir_to_goal_w + blend * dir_to_next_goal_w
         blended_dir_w = blended_dir_w / (torch.linalg.norm(blended_dir_w, dim=1, keepdim=True) + 1e-6)
 
-        progress_vel = torch.sum(drone_vel_w * blended_dir_w, dim=1)
+        forward_speed_on_line = torch.sum(drone_vel_w * blended_dir_w, dim=1)
+        progress_vel = forward_speed_on_line
         progress_vel = torch.clamp(progress_vel, min=-2.0, max=8.0)
 
         lookahead_window = torch.clamp(1.0 - torch.abs(x_gate) / 4.0, min=0.0, max=1.0)
@@ -173,6 +174,31 @@ class DefaultQuadcopterStrategy:
         lookahead_progress = torch.sum(drone_vel_w * dir_to_next_goal_w, dim=1)
         lookahead_progress = torch.clamp(lookahead_progress, min=0.0, max=8.0) / 8.0
         lookahead_progress = lookahead_progress * lookahead_mask
+
+        # Corridor-style shaping: preserve forward speed, avoid braking and lateral zig-zag,
+        # and reward committing to the next segment through/after the gate.
+        gate_corridor_window = torch.clamp(1.0 - torch.abs(x_gate) / 3.5, min=0.0, max=1.0)
+        gate_opening_window = torch.clamp(1.0 - radial_offset / (1.15 * gate_half_size + 1e-6), min=0.0, max=1.0)
+        gate_corridor_mask = gate_corridor_window * gate_opening_window
+
+        racing_line_speed = torch.clamp(forward_speed_on_line, min=0.0, max=8.0) / 8.0
+        racing_line_speed = racing_line_speed * gate_corridor_mask
+
+        target_corridor_speed = 5.5 / 8.0
+        brake_penalty = torch.relu(target_corridor_speed - racing_line_speed) * gate_corridor_mask
+
+        vel_parallel = forward_speed_on_line.unsqueeze(1) * blended_dir_w
+        lateral_speed = torch.linalg.norm(drone_vel_w - vel_parallel, dim=1)
+        lateral_motion_penalty = torch.clamp(lateral_speed / 6.0, min=0.0, max=1.0) * gate_corridor_mask
+
+        edge_ratio = radial_offset / (0.90 * gate_half_size + 1e-6)
+        edge_safety = 1.0 - torch.relu(edge_ratio - 0.7) / 0.3
+        edge_safety = torch.clamp(edge_safety, min=0.0, max=1.0) * gate_corridor_mask
+
+        exit_window = torch.clamp(1.0 - torch.abs(x_gate + 0.75) / 2.0, min=0.0, max=1.0)
+        exit_commitment = torch.sum(drone_vel_w * dir_to_next_goal_w, dim=1)
+        exit_commitment = torch.clamp(exit_commitment, min=0.0, max=8.0) / 8.0
+        exit_commitment = exit_commitment * exit_window * gate_opening_window
 
         # =========================================================
         # 3) Gate traversal detection
@@ -308,6 +334,11 @@ class DefaultQuadcopterStrategy:
                 "vel_along_gate_normal": vel_along_gate_normal * self.env.rew["vel_along_gate_normal_reward_scale"],
                 "lookahead_alignment": lookahead_alignment * self.env.rew["lookahead_alignment_reward_scale"],
                 "lookahead_progress": lookahead_progress * self.env.rew["lookahead_progress_reward_scale"],
+                "racing_line_speed": racing_line_speed * self.env.rew["racing_line_speed_reward_scale"],
+                "brake_penalty": brake_penalty * self.env.rew["brake_penalty_reward_scale"],
+                "lateral_motion_penalty": lateral_motion_penalty * self.env.rew["lateral_motion_penalty_reward_scale"],
+                "edge_safety": edge_safety * self.env.rew["edge_safety_reward_scale"],
+                "exit_commitment": exit_commitment * self.env.rew["exit_commitment_reward_scale"],
                 "exit_alignment": alignment_reward * self.env.rew["exit_alignment_reward_scale"],
                 "center": center_reward * self.env.rew["center_reward_scale"],
                 "upright": upright_reward * self.env.rew["upright_reward_scale"],
