@@ -175,21 +175,20 @@ class DefaultQuadcopterStrategy:
         lookahead_progress = torch.clamp(lookahead_progress, min=0.0, max=8.0) / 8.0
         lookahead_progress = lookahead_progress * lookahead_mask
 
-        # Corridor-style shaping: preserve forward speed, avoid braking and lateral zig-zag,
-        # and reward committing to the next segment through/after the gate.
+        # Corridor-style shaping: preserve forward speed through the gate and reward
+        # committing to the next segment without over-constraining the trajectory.
         gate_corridor_window = torch.clamp(1.0 - torch.abs(x_gate) / 3.5, min=0.0, max=1.0)
         gate_opening_window = torch.clamp(1.0 - radial_offset / (1.15 * gate_half_size + 1e-6), min=0.0, max=1.0)
         gate_corridor_mask = gate_corridor_window * gate_opening_window
 
         racing_line_speed = torch.clamp(forward_speed_on_line, min=0.0, max=8.0) / 8.0
-        racing_line_speed = racing_line_speed * gate_corridor_mask
-
-        target_corridor_speed = 5.5 / 8.0
-        brake_penalty = torch.relu(target_corridor_speed - racing_line_speed) * gate_corridor_mask
+        gate_approach_speed = racing_line_speed * gate_corridor_mask
 
         vel_parallel = forward_speed_on_line.unsqueeze(1) * blended_dir_w
         lateral_speed = torch.linalg.norm(drone_vel_w - vel_parallel, dim=1)
-        lateral_motion_penalty = torch.clamp(lateral_speed / 6.0, min=0.0, max=1.0) * gate_corridor_mask
+        line_efficiency = forward_speed_on_line / (speed + 1e-6)
+        line_efficiency = torch.clamp(line_efficiency, min=0.0, max=1.0)
+        line_efficiency = line_efficiency * (0.5 + 0.5 * gate_corridor_window)
 
         edge_ratio = radial_offset / (0.90 * gate_half_size + 1e-6)
         edge_safety = 1.0 - torch.relu(edge_ratio - 0.7) / 0.3
@@ -335,8 +334,8 @@ class DefaultQuadcopterStrategy:
                 "lookahead_alignment": lookahead_alignment * self.env.rew["lookahead_alignment_reward_scale"],
                 "lookahead_progress": lookahead_progress * self.env.rew["lookahead_progress_reward_scale"],
                 "racing_line_speed": racing_line_speed * self.env.rew["racing_line_speed_reward_scale"],
-                "brake_penalty": brake_penalty * self.env.rew["brake_penalty_reward_scale"],
-                "lateral_motion_penalty": lateral_motion_penalty * self.env.rew["lateral_motion_penalty_reward_scale"],
+                "gate_approach_speed": gate_approach_speed * self.env.rew["gate_approach_speed_reward_scale"],
+                "line_efficiency": line_efficiency * self.env.rew["line_efficiency_reward_scale"],
                 "edge_safety": edge_safety * self.env.rew["edge_safety_reward_scale"],
                 "exit_commitment": exit_commitment * self.env.rew["exit_commitment_reward_scale"],
                 "exit_alignment": alignment_reward * self.env.rew["exit_alignment_reward_scale"],
