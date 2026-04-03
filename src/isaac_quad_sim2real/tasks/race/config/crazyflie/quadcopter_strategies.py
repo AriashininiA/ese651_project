@@ -135,7 +135,7 @@ class DefaultQuadcopterStrategy:
         vel_along_gate_normal = torch.clamp(vel_along_gate_normal, min=-2.0, max=4.0) * near_gate_mask
 
         speed = torch.linalg.norm(drone_vel_w, dim=1)
-        speed_reward = torch.clamp(speed / 8.0, min=0.0, max=1.0)
+        speed_reward = torch.clamp(speed / 10.0, min=0.0, max=1.0)
 
         radial_offset = torch.sqrt(y_gate**2 + z_gate**2)
         gate_half_size = float(self.env._gate_model_cfg_data.gate_side) / 2.0
@@ -181,7 +181,7 @@ class DefaultQuadcopterStrategy:
         gate_opening_window = torch.clamp(1.0 - radial_offset / (1.15 * gate_half_size + 1e-6), min=0.0, max=1.0)
         gate_corridor_mask = gate_corridor_window * gate_opening_window
 
-        racing_line_speed = torch.clamp(forward_speed_on_line, min=0.0, max=8.0) / 8.0
+        racing_line_speed = torch.clamp(forward_speed_on_line, min=0.0, max=10.0) / 10.0
         gate_approach_speed = racing_line_speed * gate_corridor_mask
 
         vel_parallel = forward_speed_on_line.unsqueeze(1) * blended_dir_w
@@ -190,14 +190,22 @@ class DefaultQuadcopterStrategy:
         line_efficiency = torch.clamp(line_efficiency, min=0.0, max=1.0)
         line_efficiency = line_efficiency * (0.5 + 0.5 * gate_corridor_window)
 
-        edge_ratio = radial_offset / (0.90 * gate_half_size + 1e-6)
-        edge_safety = 1.0 - torch.relu(edge_ratio - 0.7) / 0.3
+        edge_ratio = radial_offset / (0.95 * gate_half_size + 1e-6)
+        edge_safety = 1.0 - torch.relu(edge_ratio - 0.9) / 0.1
         edge_safety = torch.clamp(edge_safety, min=0.0, max=1.0) * gate_corridor_mask
 
         exit_window = torch.clamp(1.0 - torch.abs(x_gate + 0.75) / 2.0, min=0.0, max=1.0)
         exit_commitment = torch.sum(drone_vel_w * dir_to_next_goal_w, dim=1)
-        exit_commitment = torch.clamp(exit_commitment, min=0.0, max=8.0) / 8.0
+        exit_commitment = torch.clamp(exit_commitment, min=0.0, max=10.0) / 10.0
         exit_commitment = exit_commitment * exit_window * gate_opening_window
+
+        aggressive_speed = torch.clamp(forward_speed_on_line, min=0.0, max=12.0) / 12.0
+        aggressive_speed = aggressive_speed * (0.35 + 0.65 * gate_corridor_window)
+
+        post_gate_window = torch.clamp(1.0 - torch.abs(x_gate + 1.25) / 2.5, min=0.0, max=1.0)
+        post_gate_accel = torch.sum(drone_vel_w * dir_to_next_goal_w, dim=1)
+        post_gate_accel = torch.clamp(post_gate_accel, min=0.0, max=12.0) / 12.0
+        post_gate_accel = post_gate_accel * post_gate_window * gate_opening_window
 
         # =========================================================
         # 3) Gate traversal detection
@@ -338,6 +346,8 @@ class DefaultQuadcopterStrategy:
                 "line_efficiency": line_efficiency * self.env.rew["line_efficiency_reward_scale"],
                 "edge_safety": edge_safety * self.env.rew["edge_safety_reward_scale"],
                 "exit_commitment": exit_commitment * self.env.rew["exit_commitment_reward_scale"],
+                "aggressive_speed": aggressive_speed * self.env.rew["aggressive_speed_reward_scale"],
+                "post_gate_accel": post_gate_accel * self.env.rew["post_gate_accel_reward_scale"],
                 "exit_alignment": alignment_reward * self.env.rew["exit_alignment_reward_scale"],
                 "center": center_reward * self.env.rew["center_reward_scale"],
                 "upright": upright_reward * self.env.rew["upright_reward_scale"],
