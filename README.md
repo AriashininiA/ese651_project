@@ -1,6 +1,7 @@
 # Drone racing in Isaac Lab with PPO
 
 **Aria X. Shi** · University of Pennsylvania (MSE Scientific Computing - PICS)
+
 **Jiacheng Zhu** · University of Pennsylvania(MSE Computer and Information Science - SEAS)
 
 End-to-end reinforcement learning stack for **autonomous quadcopter racing** in **NVIDIA Isaac Lab / Isaac Sim**: parallel **PPO** training (actor–critic, GAE, clipped surrogate), custom **reward shaping** to match real racing behavior, and **geometry-based gate validation** to stop reward hacking. This repo is the code behind the technical report in [`Report_Overleaf/`](Report_Overleaf/) (LaTeX source).
