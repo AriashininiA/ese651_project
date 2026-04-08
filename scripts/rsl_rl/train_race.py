@@ -132,6 +132,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "crash_reward_scale": -2.0,
         "time_penalty_reward_scale": -0.05,
         "action_smoothness_reward_scale": -0.005,
+        # optional stability penalties - opt-in, small conservative defaults
+        "ang_rate_penalty_reward_scale": -0.3,
+        "tilt_penalty_reward_scale": -0.5,
         "death_cost": -6.0,
     }
     # TODO ----- END -----

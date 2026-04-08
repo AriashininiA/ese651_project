@@ -256,30 +256,49 @@ class DefaultQuadcopterStrategy:
         self.env._prev_x_drone_wrt_gate = x_gate.clone()
 
         # =========================================================
-        # 10) Action Smoothness
-        # ========================================================= 
+        # 10) Action Smoothness + soft stability penalties
+        # =========================================================
         action_diff = self.env._actions - self.env._previous_actions
         action_smoothness = torch.norm(action_diff, dim=1)
+
+        # soft penalty: high angular rates (discourage aggressive rotations)
+        drone_ang_vel_b = getattr(self.env._robot.data, "root_ang_vel_b", None)
+        if drone_ang_vel_b is not None:
+            ang_rate = torch.linalg.norm(drone_ang_vel_b, dim=1)
+        else:
+            ang_rate = torch.zeros(self.num_envs, device=self.device)
+
+        ang_rate_threshold = 6.0
+        ang_rate_penalty = torch.clamp((ang_rate - ang_rate_threshold) / (ang_rate_threshold + 1e-6), min=0.0, max=1.0)
+
+        # soft penalty: large tilt (1 - body_z_in_world.z gives tilt magnitude)
+        tilt = 1.0 - body_z_in_world[:, 2]
+        tilt_penalty = torch.clamp(tilt - 0.4, min=0.0, max=1.0)
 
         # =========================================================
         # 11) Final scaled reward
         # =========================================================
         if self.cfg.is_train:
+            # use safe lookups with sensible defaults so missing keys don't crash
+            rew = getattr(self.env, "rew", {})
             rewards = {
-                "gate_pass": gate_pass_reward * self.env.rew["gate_pass_reward_scale"],
-                "reverse_gate_cross_penalty": reverse_gate_cross_penalty * self.env.rew["reverse_gate_cross_penalty_reward_scale"],
-                "wrong_side_penalty": wrong_side_penalty * self.env.rew["wrong_side_penalty_reward_scale"],
-                "progress_dist": progress_dist * self.env.rew["progress_dist_reward_scale"],
-                "progress_vel": progress_vel * self.env.rew["progress_vel_reward_scale"],
-                "speed": speed_reward * self.env.rew["speed_reward_scale"],
-                "vel_along_gate_normal": vel_along_gate_normal * self.env.rew["vel_along_gate_normal_reward_scale"],
-                "exit_alignment": alignment_reward * self.env.rew["exit_alignment_reward_scale"],
-                "center": center_reward * self.env.rew["center_reward_scale"],
-                "upright": upright_reward * self.env.rew["upright_reward_scale"],
-                "inversion_bonus": inversion_bonus * self.env.rew["inversion_bonus_reward_scale"],
-                "crash": crash * self.env.rew["crash_reward_scale"],
-                "time_penalty": time_penalty * self.env.rew["time_penalty_reward_scale"],
-                "action_smoothness": action_smoothness * self.env.rew["action_smoothness_reward_scale"],
+                "gate_pass": gate_pass_reward * rew.get("gate_pass_reward_scale", 25.0),
+                "reverse_gate_cross_penalty": reverse_gate_cross_penalty * rew.get("reverse_gate_cross_penalty_reward_scale", -30.0),
+                "wrong_side_penalty": wrong_side_penalty * rew.get("wrong_side_penalty_reward_scale", -2.0),
+                "progress_dist": progress_dist * rew.get("progress_dist_reward_scale", 0.75),
+                "progress_vel": progress_vel * rew.get("progress_vel_reward_scale", 0.5),
+                "speed": speed_reward * rew.get("speed_reward_scale", 0.3),
+                "vel_along_gate_normal": vel_along_gate_normal * rew.get("vel_along_gate_normal_reward_scale", 0.25),
+                "exit_alignment": alignment_reward * rew.get("exit_alignment_reward_scale", 0.7),
+                "center": center_reward * rew.get("center_reward_scale", 0.0),
+                "upright": upright_reward * rew.get("upright_reward_scale", 0.01),
+                "inversion_bonus": inversion_bonus * rew.get("inversion_bonus_reward_scale", 0.5),
+                "crash": crash * rew.get("crash_reward_scale", -1.5),
+                "time_penalty": time_penalty * rew.get("time_penalty_reward_scale", -0.3),
+                "action_smoothness": action_smoothness * rew.get("action_smoothness_reward_scale", -0.002),
+                # new soft penalties (default to 0.0 so they are opt-in from train script)
+                "ang_rate_penalty": ang_rate_penalty * rew.get("ang_rate_penalty_reward_scale", 0.0),
+                "tilt_penalty": tilt_penalty * rew.get("tilt_penalty_reward_scale", 0.0),
             }
 
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
