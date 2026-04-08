@@ -104,8 +104,13 @@ class DefaultQuadcopterStrategy:
         # Dynamic goal for Gate 3 (Encourage Power Loop)
         dynamic_goal_w = self.env._desired_pos_w.clone()
         is_targeting_gate_3 = (self.env._idx_wp == 3).float().unsqueeze(1)
-        powerloop_ghost_vertical_offset = 1.5
-        powerloop_ghost_horizontal_offset = 0.5
+        # Only bias the target for the dedicated powerloop track.
+        if self.env.cfg.track_name == "powerloop":
+            powerloop_ghost_vertical_offset = 1.5
+            powerloop_ghost_horizontal_offset = 0.5
+        else:
+            powerloop_ghost_vertical_offset = 0.0
+            powerloop_ghost_horizontal_offset = 0.0
         dynamic_goal_w[:, 2] += powerloop_ghost_vertical_offset * is_targeting_gate_3[:, 0]
         dynamic_goal_w[:, 1] += powerloop_ghost_horizontal_offset * is_targeting_gate_3[:, 0]
 
@@ -212,11 +217,14 @@ class DefaultQuadcopterStrategy:
         body_z_in_world = rot_mats[:, :, 2]                             # drone body z-axis expressed in world
         upright_reward = torch.clamp((body_z_in_world[:, 2] - 0.5) * 2, min=0.0, max=1.0)
 
-        not_powerloop_mask = (self.env._idx_wp != 3).float()
-        upright_reward = upright_reward * not_powerloop_mask
+        if self.env.cfg.track_name == "powerloop":
+            not_powerloop_mask = (self.env._idx_wp != 3).float()
+            upright_reward = upright_reward * not_powerloop_mask
+            is_targeting_gate_3_flat = (self.env._idx_wp == 3).float()
+        else:
+            is_targeting_gate_3_flat = torch.zeros(self.num_envs, device=self.device)
 
-        # Encourage aggressive maneuvers (e.g. Powerloop) at gate 3
-        is_targeting_gate_3_flat = (self.env._idx_wp == 3).float()
+        # Encourage aggressive maneuvers (e.g. Powerloop) only on the powerloop track
         upside_down_factor = 0.5 * (1.0 - body_z_in_world[:, 2])
         high_enough = (drone_pos_w[:, 2] > 1.0).float()
         inversion_bonus = upside_down_factor * is_targeting_gate_3_flat * high_enough

@@ -137,6 +137,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "tilt_penalty_reward_scale": -0.5,
         "death_cost": -6.0,
     }
+
+    if env_cfg.track_name != "powerloop":
+        rewards["progress_dist_reward_scale"] = 1.0
+        rewards["speed_reward_scale"] = 0.0
+        rewards["vel_along_gate_normal_reward_scale"] = 0.0
+        rewards["center_reward_scale"] = 0.3
+        rewards["upright_reward_scale"] = 0.2
+        rewards["inversion_bonus_reward_scale"] = 0.0
+        rewards["crash_reward_scale"] = -10.0
+        rewards["time_penalty_reward_scale"] = 0.0
+        rewards["ang_rate_penalty_reward_scale"] = -0.75
+        rewards["tilt_penalty_reward_scale"] = -1.0
+        rewards["death_cost"] = -50.0
     # TODO ----- END -----
 
     env_cfg.is_train = True
